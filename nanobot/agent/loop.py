@@ -33,6 +33,31 @@ from nanobot.ene import EneContext, ModuleRegistry
 DAD_IDS = {"telegram:8559611823", "discord:1175414972482846813"}
 RESTRICTED_TOOLS = {"exec", "write_file", "edit_file", "read_file", "list_dir", "spawn", "cron", "view_metrics", "view_experiments"}
 
+# Ene: impersonation detection — Dad's known display names (lowercased)
+# If someone's display name looks like one of these but their ID isn't Dad's,
+# it's an impersonation attempt and Ene should be warned.
+_DAD_DISPLAY_NAMES = {"iitai", "litai", "言いたい", "iitai / 言いたい", "litai / 言いたい"}
+_CONFUSABLE_PAIRS = str.maketrans("lI", "Il")  # l↔I swap detection
+
+
+def _is_dad_impersonation(display_name: str, caller_id: str) -> bool:
+    """Check if a display name looks like Dad's but the ID doesn't match."""
+    if caller_id in DAD_IDS:
+        return False  # It IS Dad
+    name_lower = display_name.lower().strip()
+    # Direct match against known names
+    if name_lower in _DAD_DISPLAY_NAMES:
+        return True
+    # Check l/I confusion: "litai" vs "iitai", "Litai" vs "Iitai"
+    swapped = name_lower.translate(_CONFUSABLE_PAIRS)
+    if swapped in _DAD_DISPLAY_NAMES:
+        return True
+    # Substring check — catches "litai / 言いたい xyz" etc
+    for dad_name in _DAD_DISPLAY_NAMES:
+        if dad_name in name_lower or dad_name in swapped:
+            return True
+    return False
+
 
 class AgentLoop:
     """
@@ -456,6 +481,13 @@ class AgentLoop:
                 author = f"{display} (@{username})"
             else:
                 author = display
+
+            # Ene: impersonation detection — warn if display name mimics Dad's
+            caller_id = f"{m.channel}:{m.sender_id}"
+            if _is_dad_impersonation(display, caller_id):
+                logger.warning(f"Impersonation detected: '{display}' (@{username}) is NOT Dad (id={m.sender_id})")
+                author = f"{display} (@{username}) [⚠ NOT Dad — impersonating display name]"
+
             parts.append(f"{author}: {m.content}")
 
         merged_content = "\n".join(parts)
@@ -471,7 +503,7 @@ class AgentLoop:
             if caller_id in DAD_IDS:
                 trigger_msg = m
                 break
-            if "ene" in m.content.lower():
+            if "ene" in m.content.lower() or m.metadata.get("is_reply_to_ene"):
                 trigger_msg = m
 
         logger.info(
@@ -791,6 +823,11 @@ class AgentLoop:
         if "ene" in msg.content.lower():
             return True
 
+        # Ene: respond when someone replies to one of Ene's messages
+        if msg.metadata.get("is_reply_to_ene"):
+            logger.debug(f"Responding to reply-to-Ene from {msg.sender_id}")
+            return True
+
         # Otherwise lurk — store in session but don't respond
         return False
 
@@ -982,6 +1019,13 @@ Write the summary:"""
                 author = f"{display} (@{username})"
             else:
                 author = display
+
+            # Ene: impersonation detection in lurk mode too
+            caller_id = f"{msg.channel}:{msg.sender_id}"
+            if _is_dad_impersonation(display, caller_id):
+                logger.warning(f"Impersonation detected (lurk): '{display}' (@{username}) is NOT Dad (id={msg.sender_id})")
+                author = f"{display} (@{username}) [⚠ NOT Dad — impersonating display name]"
+
             session.add_message("user", f"{author}: {msg.content}")
             self.sessions.save(session)
             # Write to interaction log
@@ -1095,8 +1139,32 @@ Write the summary:"""
 
         final_content, tools_used = await self._run_agent_loop(initial_messages)
 
+        # Ene: if agent loop returned None, the response was already sent via
+        # message tool OR the loop broke (tool loop, duplicate sends, etc.).
+        # Log the reason for debugging but DON'T send a fallback message.
         if final_content is None:
-            final_content = "I've completed processing but have no response to give."
+            logger.warning(
+                f"Agent loop returned None for {msg.channel}:{msg.sender_id} "
+                f"(tools_used={tools_used}). Response likely already sent via tool, "
+                f"or loop broke. NOT sending fallback message."
+            )
+            # Still store in session so history isn't lost
+            session.add_message("user", msg.content)
+            session.add_message("assistant", "[no direct response — sent via tool or loop ended]",
+                                tools_used=tools_used if tools_used else None)
+            self.sessions.save(session)
+            # Write to interaction logs for analysis
+            self.memory.append_interaction_log(
+                session_key=key, role="user", content=msg.content,
+                author_name=msg.metadata.get("author_name"),
+            )
+            self.memory.append_interaction_log(
+                session_key=key, role="assistant",
+                content=f"[no response — tools: {tools_used}]",
+                tools_used=tools_used if tools_used else None,
+            )
+            asyncio.create_task(self.module_registry.notify_message(msg, responded=True))
+            return None
 
         # Ene: store raw response in session before cleaning
         session.add_message("user", msg.content)

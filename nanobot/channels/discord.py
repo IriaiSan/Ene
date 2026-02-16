@@ -263,13 +263,17 @@ class DiscordChannel(BaseChannel):
                 # Non-image attachments: note them but don't download
                 content_parts.append(f"[{display_name} sent a file: {filename}]")
 
-        reply_to = (payload.get("referenced_message") or {}).get("id")
+        referenced_message = payload.get("referenced_message") or {}
+        reply_to = referenced_message.get("id")
+        # Ene: extract who was replied to — if it's Ene, she should respond
+        reply_to_author_id = (referenced_message.get("author") or {}).get("id")
+        is_reply_to_ene = reply_to_author_id == self._bot_user_id if (reply_to_author_id and self._bot_user_id) else False
 
         # Ene: only start typing if she's likely to respond
-        # (mentioned by name, @mention, or it's a DM). Avoids infinite
+        # (mentioned by name, @mention, reply to Ene, or it's a DM). Avoids infinite
         # "Ene is typing..." on lurked public messages.
         is_dm = guild_id is None
-        might_respond = is_dm or "ene" in content.lower()
+        might_respond = is_dm or "ene" in content.lower() or is_reply_to_ene
         if might_respond:
             await self._start_typing(channel_id)
 
@@ -282,6 +286,8 @@ class DiscordChannel(BaseChannel):
                 "message_id": str(payload.get("id", "")),
                 "guild_id": payload.get("guild_id"),
                 "reply_to": reply_to,
+                "reply_to_author_id": reply_to_author_id,
+                "is_reply_to_ene": is_reply_to_ene,
                 "author_name": display_name,
                 "username": username,
             },
