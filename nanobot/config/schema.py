@@ -159,10 +159,12 @@ class AgentDefaults(BaseModel):
     """Default agent configuration."""
     workspace: str = "~/.nanobot/workspace"
     model: str = "anthropic/claude-opus-4-5"
+    consolidation_model: str | None = None  # Ene: separate model for diary consolidation
     max_tokens: int = 8192
     temperature: float = 0.7
     max_tool_iterations: int = 20
     memory_window: int = 50
+    diary_context_days: int = 3  # Ene: how many diary days to load into context
 
 
 class AgentsConfig(BaseModel):

@@ -97,8 +97,9 @@ You are nanobot, a helpful AI assistant. You have access to tools that allow you
 
 ## Workspace
 Your workspace is at: {workspace_path}
-- Long-term memory: {workspace_path}/memory/MEMORY.md
-- History log: {workspace_path}/memory/HISTORY.md (grep-searchable)
+- Core memory: {workspace_path}/memory/CORE.md (your permanent memories, always loaded)
+- Diary: {workspace_path}/memory/diary/YYYY-MM-DD.md (your daily journal, recent entries loaded)
+- Interaction logs: {workspace_path}/memory/logs/YYYY-MM-DD/ (detailed per-channel records, read on demand)
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
 IMPORTANT: When responding to direct questions or conversations, reply directly with your text response.
@@ -106,8 +107,12 @@ Only use the 'message' tool when you need to send a message to a specific chat c
 For normal conversation, just respond with text - do not call the message tool.
 
 Always be helpful, accurate, and concise. When using tools, think step by step: what you know, what you need, and why you chose this tool.
-When remembering something important, write to {workspace_path}/memory/MEMORY.md
-To recall past events, grep {workspace_path}/memory/HISTORY.md"""
+
+## Memory
+- Use the save_memory tool to record important things you want to remember forever.
+- Your recent diary entries are loaded automatically (you wrote these).
+- To recall details about a specific past day, use read_file on the interaction logs.
+- You are one person across all channels. Your core memory and diary are shared."""
     
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""

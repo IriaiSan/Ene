@@ -21,6 +21,7 @@ from nanobot.agent.tools.web import WebSearchTool, WebFetchTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.cron import CronTool
+from nanobot.agent.tools.save_memory import SaveMemoryTool
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.subagent import SubagentManager
 from nanobot.session.manager import Session, SessionManager
@@ -59,6 +60,8 @@ class AgentLoop:
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
+        consolidation_model: str | None = None,
+        diary_context_days: int = 3,
     ):
         from nanobot.config.schema import ExecToolConfig
         from nanobot.cron.service import CronService
@@ -66,6 +69,7 @@ class AgentLoop:
         self.provider = provider
         self.workspace = workspace
         self.model = model or provider.get_default_model()
+        self.consolidation_model = consolidation_model
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -74,6 +78,10 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+
+        self.memory = MemoryStore(workspace, diary_context_days=diary_context_days)
+        if self.memory.migrate_legacy():
+            logger.info("Migrated legacy memory files (MEMORY.md/HISTORY.md) to new architecture")
 
         self.context = ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
@@ -128,6 +136,9 @@ class AgentLoop:
         # Cron tool (for scheduling)
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+        # Ene: core memory tool (available to all — it's Ene writing, not the user)
+        self.tools.register(SaveMemoryTool(memory=self.memory))
     
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
@@ -359,8 +370,13 @@ class AgentLoop:
 
         # Ene: lurk mode — store message but don't respond
         if not self._should_respond(msg):
-            session.add_message("user", f"{msg.metadata.get('author_name', msg.sender_id)}: {msg.content}")
+            author = msg.metadata.get('author_name', msg.sender_id)
+            session.add_message("user", f"{author}: {msg.content}")
             self.sessions.save(session)
+            # Write to interaction log
+            self.memory.append_interaction_log(
+                session_key=key, role="user", content=msg.content, author_name=author,
+            )
             logger.debug(f"Lurking on message from {msg.sender_id} in {key}")
             return None
         
@@ -406,6 +422,16 @@ class AgentLoop:
         session.add_message("assistant", final_content,
                             tools_used=tools_used if tools_used else None)
         self.sessions.save(session)
+
+        # Ene: write to interaction logs (hardcoded, not LLM-driven)
+        self.memory.append_interaction_log(
+            session_key=key, role="user", content=msg.content,
+            author_name=msg.metadata.get("author_name"),
+        )
+        self.memory.append_interaction_log(
+            session_key=key, role="assistant", content=final_content,
+            tools_used=tools_used if tools_used else None,
+        )
 
         # Ene: clean response (strip leaks, enforce length, etc.)
         cleaned = self._ene_clean_response(final_content, msg)
@@ -468,34 +494,35 @@ class AgentLoop:
         )
     
     async def _consolidate_memory(self, session, archive_all: bool = False) -> None:
-        """Consolidate old messages into MEMORY.md + HISTORY.md.
+        """Consolidate old messages into a diary entry.
+
+        New memory architecture:
+        - Interaction logs: written in real-time by _process_message (not here)
+        - Diary entries: summarized here from the conversation buffer
+        - Core memory: written by Ene via save_memory tool (not here)
 
         Args:
-            archive_all: If True, clear all messages and reset session (for /new command).
-                       If False, only write to files without modifying session.
+            archive_all: If True, summarize all messages (for /new command).
         """
-        memory = MemoryStore(self.workspace)
-
         if archive_all:
             old_messages = session.messages
             keep_count = 0
-            logger.info(f"Memory consolidation (archive_all): {len(session.messages)} total messages archived")
+            logger.info(f"Diary consolidation (archive_all): {len(session.messages)} messages")
         else:
             keep_count = self.memory_window // 2
             if len(session.messages) <= keep_count:
-                logger.debug(f"Session {session.key}: No consolidation needed (messages={len(session.messages)}, keep={keep_count})")
                 return
 
             messages_to_process = len(session.messages) - session.last_consolidated
             if messages_to_process <= 0:
-                logger.debug(f"Session {session.key}: No new messages to consolidate (last_consolidated={session.last_consolidated}, total={len(session.messages)})")
                 return
 
             old_messages = session.messages[session.last_consolidated:-keep_count]
             if not old_messages:
                 return
-            logger.info(f"Memory consolidation started: {len(session.messages)} total, {len(old_messages)} new to consolidate, {keep_count} keep")
+            logger.info(f"Diary consolidation: {len(old_messages)} messages to summarize")
 
+        # Build conversation text
         lines = []
         for m in old_messages:
             if not m.get("content"):
@@ -503,89 +530,73 @@ class AgentLoop:
             tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
             lines.append(f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}")
         conversation = "\n".join(lines)
-        current_memory = memory.read_long_term()
 
-        prompt = f"""You are a memory consolidation agent. Process this conversation and return a JSON object with exactly two keys:
+        if not conversation.strip():
+            if not archive_all:
+                session.last_consolidated = len(session.messages) - keep_count
+            return
 
-1. "history_entry": A paragraph (2-5 sentences) summarizing the key events/decisions/topics. Start with a timestamp like [YYYY-MM-DD HH:MM]. Include enough detail to be useful when found by grep search later.
+        prompt = f"""You are writing a diary entry for Ene (a digital AI companion).
+Summarize this conversation in FIRST PERSON, as Ene would write it.
+Keep it brief (2-5 sentences). Focus on: what happened, who was involved,
+anything emotionally or factually important, any decisions made.
 
-2. "memory_update": The updated long-term memory content. Add any new facts: user location, preferences, personal info, habits, project context, technical decisions, tools/services used. If nothing new, return the existing content unchanged.
+Write naturally, like a personal journal entry. No JSON, no markdown headers.
 
-## Current Long-term Memory
-{current_memory or "(empty)"}
-
-## Conversation to Process
+## Conversation
 {conversation}
 
-Respond with ONLY valid JSON, no markdown fences."""
+Write the diary entry now:"""
 
-        # Ene: retry consolidation with buffer truncation on failure
+        # Use configurable consolidation model (falls back to main model)
+        model = self.consolidation_model or self.model
         max_retries = 2
-        messages_to_drop = 10  # drop oldest N messages on each retry
 
         for attempt in range(max_retries + 1):
             try:
                 response = await self.provider.chat(
                     messages=[
-                        {"role": "system", "content": "You are a memory consolidation agent. Respond only with valid JSON."},
+                        {"role": "system", "content": "Write brief first-person diary entries. No JSON, no markdown. Just natural journaling."},
                         {"role": "user", "content": prompt},
                     ],
-                    model=self.model,
+                    model=model,
                 )
                 text = (response.content or "").strip()
                 if not text:
-                    logger.warning("Memory consolidation: LLM returned empty response, skipping")
-                    return
+                    logger.warning("Diary consolidation: empty response, skipping")
+                    break
+
+                # Strip any markdown fences the model might add
                 if text.startswith("```"):
                     text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-                result = json_repair.loads(text)
-                if not isinstance(result, dict):
-                    raise ValueError(f"Unexpected response type: {type(result)}")
 
-                if entry := result.get("history_entry"):
-                    memory.append_history(entry)
-                if update := result.get("memory_update"):
-                    if update != current_memory:
-                        memory.write_long_term(update)
+                self.memory.append_diary(text)
+                logger.info(f"Diary entry written: {text[:80]}")
 
                 if archive_all:
                     session.last_consolidated = 0
                 else:
                     session.last_consolidated = len(session.messages) - keep_count
-                logger.info(f"Memory consolidation done: {len(session.messages)} messages, last_consolidated={session.last_consolidated}")
                 return  # success
 
             except Exception as e:
                 if attempt < max_retries:
-                    # Truncate oldest messages from the conversation and rebuild prompt
-                    old_messages = old_messages[messages_to_drop:]
+                    # Drop oldest messages and retry
+                    old_messages = old_messages[10:]
                     if not old_messages:
-                        logger.warning(f"Memory consolidation: no messages left after truncation, giving up")
-                        return
-                    lines = []
-                    for m in old_messages:
-                        if not m.get("content"):
-                            continue
-                        tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
-                        lines.append(f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}")
+                        logger.warning("Diary consolidation: no messages left after truncation")
+                        break
+                    lines = [
+                        f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}: {m['content']}"
+                        for m in old_messages if m.get("content")
+                    ]
                     conversation = "\n".join(lines)
-                    prompt = f"""You are a memory consolidation agent. Process this conversation and return a JSON object with exactly two keys:
+                    prompt = f"""Write a brief first-person diary entry for Ene summarizing this conversation (2-5 sentences):
 
-1. "history_entry": A paragraph (2-5 sentences) summarizing the key events/decisions/topics. Start with a timestamp like [YYYY-MM-DD HH:MM]. Include enough detail to be useful when found by grep search later.
-
-2. "memory_update": The updated long-term memory content. Add any new facts: user location, preferences, personal info, habits, project context, technical decisions, tools/services used. If nothing new, return the existing content unchanged.
-
-## Current Long-term Memory
-{current_memory or "(empty)"}
-
-## Conversation to Process
-{conversation}
-
-Respond with ONLY valid JSON, no markdown fences."""
-                    logger.warning(f"Memory consolidation attempt {attempt+1} failed ({e}), retrying with {len(old_messages)} messages")
+{conversation}"""
+                    logger.warning(f"Diary consolidation attempt {attempt+1} failed ({e}), retrying")
                 else:
-                    logger.error(f"Memory consolidation failed after {max_retries+1} attempts: {e}")
-                    # Force-advance the consolidation pointer so we don't retry the same buffer
+                    logger.error(f"Diary consolidation failed after {max_retries+1} attempts: {e}")
                     if not archive_all:
                         session.last_consolidated = len(session.messages) - keep_count
 
