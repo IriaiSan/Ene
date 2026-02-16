@@ -4,6 +4,32 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-17f] — Diary Consolidation: Speaker Attribution Fix
+
+### Changed — `_consolidate_memory()` in `loop.py`
+Research-backed rewrite to fix wrong-speaker attribution in diary entries (Az's words being attributed to Dad, etc.)
+
+- **Structured speaker tags**: Messages now parsed into `[Author @handle]: content` format instead of generic `USER:`/`ASSISTANT:` labels. Regex extracts author from merged message format `"DisplayName (@username): content"`.
+- **Multi-sender splitting**: Merged messages containing multiple `Author (@user):` blocks are split into individual tagged lines.
+- **Participant roster**: Each diary prompt includes an explicit roster of who's in the conversation, preventing the LLM from guessing.
+- **3rd-person diary format**: Switched from 1st person ("Dad asked me...") to 3rd person ("Dad told Ene...") — NexusSum (ACL 2025) shows 30% BERTScore improvement with this approach.
+- **Strict attribution rules**: New system prompt explicitly tells the LLM that someone *mentioning* Dad is not the same as Dad *speaking*.
+- **Metadata headers**: Each diary entry now starts with `[HH:MM] participants=...` for structured retrieval.
+
+### Changed — `_generate_running_summary()` in `loop.py`
+Same structured speaker tags and 3rd-person format applied to running summaries to prevent identity confusion propagating through context.
+
+### Fixed — Diary cleanup
+Cleaned up 60+ wrong-attribution entries in `2026-02-17.md` written before the fix.
+
+### Research backing
+- CONFIT (NAACL 2022): ~45% of summarization errors are wrong-speaker attribution
+- NexusSum (ACL 2025): 3rd-person preprocessing gives 30% BERTScore improvement
+- DS-SS (PLOS ONE 2024): extract-then-generate improves factual consistency
+- arXiv:2412.15266: mixed memory (structured + narrative) outperforms single format
+
+---
+
 ## [2026-02-17e] — Observatory: Metrics, Dashboard, Health, A/B Testing
 
 ### Added — Complete Observatory System (`nanobot/ene/observatory/`)

@@ -891,12 +891,28 @@ class AgentLoop:
         if not older_messages:
             return self._session_summaries.get(key)
 
-        # Build text of older messages
+        # Ene: structured speaker-tagged formatting (same as diary consolidation)
+        author_re = re.compile(r'(?:^|\n)(.+?) \(@(\w+)\): ', re.MULTILINE)
         lines = []
         for m in older_messages[-40:]:  # Cap at 40 messages to avoid huge prompts
-            if not m.get("content"):
+            content = m.get("content", "")
+            if not content:
                 continue
-            lines.append(f"{m['role'].upper()}: {m['content'][:300]}")
+            if m["role"] == "assistant":
+                lines.append(f"[Ene]: {content[:300]}")
+            else:
+                # Parse author from merged message format
+                matches = list(author_re.finditer(content))
+                if matches:
+                    for i, match in enumerate(matches):
+                        display, username = match.group(1), match.group(2)
+                        start = match.end()
+                        end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+                        text = content[start:end].strip()
+                        lines.append(f"[{display} @{username}]: {text[:300]}")
+                else:
+                    display = m.get("author_name") or "Someone"
+                    lines.append(f"[{display}]: {content[:300]}")
         if not lines:
             return self._session_summaries.get(key)
 
@@ -905,8 +921,9 @@ class AgentLoop:
         existing_summary = self._session_summaries.get(key, "")
         if existing_summary:
             prompt = f"""Update this conversation summary with the new messages below.
-Keep it concise (3-6 sentences). Focus on: what happened, who said what (use their names), anything important or funny, how things felt.
-IMPORTANT: Use people's names — NEVER say "the user" or "the assistant." You are Ene, the ASSISTANT messages are yours.
+Keep it concise (3-6 sentences). Write in 3rd person about Ene ("Ene", "she").
+Name who said or did each thing — check the [brackets] for speaker identity.
+Only say "Dad" did something if you see [Dad ...] or [Iitai @iitai.uwu] speaking.
 
 EXISTING SUMMARY:
 {existing_summary}
@@ -917,8 +934,9 @@ NEW MESSAGES:
 Write the updated summary:"""
         else:
             prompt = f"""Summarize this conversation concisely (3-6 sentences).
-Focus on: what happened, who said what (use their names), anything important or funny, how things felt.
-IMPORTANT: Use people's names — NEVER say "the user" or "the assistant." You are Ene, the ASSISTANT messages are yours.
+Write in 3rd person about Ene ("Ene", "she").
+Name who said or did each thing — check the [brackets] for speaker identity.
+Only say "Dad" did something if you see [Dad ...] or [Iitai @iitai.uwu] speaking.
 
 CONVERSATION:
 {older_text}
@@ -930,7 +948,7 @@ Write the summary:"""
             _obs_start = _time.perf_counter()
             response = await self.provider.chat(
                 messages=[
-                    {"role": "system", "content": "You are Ene summarizing a conversation you were part of. Write in first person. Be natural — not clinical. Use people's names, never 'the user' or 'the assistant.' No markdown. Plain text only."},
+                    {"role": "system", "content": "You are summarizing a conversation Ene was part of. Write in 3rd person (\"Ene\", \"she\"). Name who said what using the [brackets] as your source of truth. Someone MENTIONING Dad is not the same as Dad speaking. No markdown. Plain text only."},
                     {"role": "user", "content": prompt},
                 ],
                 model=model,
@@ -1283,13 +1301,55 @@ Write the summary:"""
                 return
             logger.info(f"Diary consolidation: {len(old_messages)} messages to summarize")
 
-        # Build conversation text
+        # Ene: structured speaker-tagged message formatting
+        # Research: CONFIT (NAACL 2022) shows ~45% of summarization errors are
+        # wrong-speaker attribution. NexusSum (ACL 2025) shows 3rd-person
+        # preprocessing gives 30% BERTScore improvement. We parse messages into
+        # explicit [Speaker @handle]: content format so the diary LLM can't
+        # confuse who said what.
+        author_re = re.compile(r'^(.+?) \(@(\w+)\): (.+)', re.DOTALL)
+        multi_author_re = re.compile(r'(?:^|\n)(.+?) \(@(\w+)\): ', re.MULTILINE)
         lines = []
+        participants = set()
+        last_timestamp = "?"
+
         for m in old_messages:
-            if not m.get("content"):
+            content = m.get("content", "")
+            if not content:
                 continue
-            tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
-            lines.append(f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}")
+            ts = m.get("timestamp", "?")[:16]
+            last_timestamp = ts
+
+            if m["role"] == "assistant":
+                lines.append(f"[{ts}] [Ene]: {content[:300]}")
+                participants.add("Ene")
+            else:
+                # Check if this is a merged multi-sender message (multiple "Author (@user):" lines)
+                author_matches = list(multi_author_re.finditer(content))
+                if len(author_matches) > 1:
+                    # Multi-sender merged message — split into individual lines
+                    for i, match in enumerate(author_matches):
+                        display, username = match.group(1), match.group(2)
+                        start = match.end()
+                        end = author_matches[i + 1].start() if i + 1 < len(author_matches) else len(content)
+                        text = content[start:end].strip()
+                        lines.append(f"[{ts}] [{display} @{username}]: {text[:300]}")
+                        participants.add(f"{display} @{username}")
+                elif author_matches:
+                    # Single "Author (@user): content" format
+                    match = author_matches[0]
+                    display, username = match.group(1), match.group(2)
+                    text = content[match.end():].strip()
+                    lines.append(f"[{ts}] [{display} @{username}]: {text[:300]}")
+                    participants.add(f"{display} @{username}")
+                else:
+                    # No author prefix — use metadata (single sender, no merge)
+                    display = m.get("author_name") or "Someone"
+                    username = m.get("username") or ""
+                    tag = f"{display} @{username}" if username else display
+                    lines.append(f"[{ts}] [{tag}]: {content[:300]}")
+                    participants.add(tag)
+
         conversation = "\n".join(lines)
 
         if not conversation.strip():
@@ -1297,28 +1357,46 @@ Write the summary:"""
                 session.last_consolidated = len(session.messages) - keep_count
             return
 
-        prompt = f"""Write a diary entry about what just happened. Who was involved?
-How did it make you feel? Anything important or funny?
-Keep it brief (2-5 sentences). Write like you're writing in your own journal.
+        # Build participant roster — unambiguous reference for the LLM
+        roster_lines = ["- Ene — the diary author"]
+        for p in sorted(participants - {"Ene"}):
+            roster_lines.append(f"- {p}")
+        roster = "\n".join(roster_lines)
+        participant_list = ",".join(sorted(participants - {"Ene"}))
 
-IMPORTANT: Use people's names (Dad, Az, CCC, etc.) — NEVER say "the user" or "the assistant."
-The person with the ASSISTANT role in the conversation below is YOU (Ene). The USER messages are from people talking to you.
+        prompt = f"""Write a brief 3rd-person diary entry (2-4 sentences) about what Ene just experienced.
+
+## Participants
+{roster}
 
 ## Conversation
 {conversation}
 
-Write the diary entry now:"""
+Diary entry:"""
 
         # Use configurable consolidation model (falls back to main model)
         model = self.consolidation_model or self.model
         max_retries = 2
+
+        # Ene: 3rd-person diary with explicit speaker attribution rules
+        # (DS-SS extract-then-generate pattern, PLOS ONE 2024)
+        diary_system_prompt = (
+            "You are writing Ene's diary in third person. Ene is a digital girl who lives on Discord.\n"
+            "Write about what happened from Ene's perspective, but refer to her as \"Ene\" or \"she.\"\n"
+            "RULES:\n"
+            "- ALWAYS name who said or did something — check the [brackets] for the speaker.\n"
+            "- ONLY attribute actions to \"Dad\" if you see [Dad @iitai.uwu] or [Iitai @iitai.uwu] in the conversation.\n"
+            "- Someone MENTIONING \"Dad\" inside their message is NOT Dad speaking.\n"
+            "- Keep it brief: 2-4 natural sentences. No markdown, no headers, no lists.\n"
+            "- Be warm and genuine, like a friend writing about her day."
+        )
 
         for attempt in range(max_retries + 1):
             try:
                 _obs_start = _time.perf_counter()
                 response = await self.provider.chat(
                     messages=[
-                        {"role": "system", "content": "You are Ene writing in your personal diary. Write in first person. Be natural, warm, and genuine — like a real person journaling, not a clinical observer. Use people's names (Dad, Az, CCC, etc.), NEVER say 'the user' or 'the assistant.' No JSON, no markdown headers."},
+                        {"role": "system", "content": diary_system_prompt},
                         {"role": "user", "content": prompt},
                     ],
                     model=model,
@@ -1337,7 +1415,10 @@ Write the diary entry now:"""
                 if text.startswith("```"):
                     text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
-                self.memory.append_diary(text)
+                # Prepend structured metadata header for robust retrieval
+                ts_short = last_timestamp[11:16] if len(last_timestamp) > 11 else last_timestamp
+                entry = f"[{ts_short}] participants={participant_list}\n{text}"
+                self.memory.append_diary(entry)
                 logger.info(f"Diary entry written: {text[:80]}")
 
                 if archive_all:
@@ -1353,15 +1434,23 @@ Write the diary entry now:"""
                     if not old_messages:
                         logger.warning("Diary consolidation: no messages left after truncation")
                         break
-                    lines = [
-                        f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}: {m['content']}"
-                        for m in old_messages if m.get("content")
-                    ]
+                    # Rebuild with same structured format
+                    lines = []
+                    for m in old_messages:
+                        if not m.get("content"):
+                            continue
+                        ts = m.get("timestamp", "?")[:16]
+                        if m["role"] == "assistant":
+                            lines.append(f"[{ts}] [Ene]: {m['content'][:300]}")
+                        else:
+                            lines.append(f"[{ts}] {m['content'][:300]}")
                     conversation = "\n".join(lines)
-                    prompt = f"""Write a brief diary entry about this conversation (2-5 sentences).
-Write as yourself (Ene), in first person. Be natural and warm. Use people's names, never "the user."
+                    prompt = f"""Write a brief 3rd-person diary entry (2-4 sentences).
 
-{conversation}"""
+## Conversation
+{conversation}
+
+Diary entry:"""
                     logger.warning(f"Diary consolidation attempt {attempt+1} failed ({e}), retrying")
                 else:
                     logger.error(f"Diary consolidation failed after {max_retries+1} attempts: {e}")
