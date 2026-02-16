@@ -44,7 +44,60 @@ class Session:
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
         """Get recent messages in LLM format (role + content only)."""
         return [{"role": m["role"], "content": m["content"]} for m in self.messages[-max_messages:]]
-    
+
+    def get_responded_count(self) -> int:
+        """Count messages where Ene actually responded (assistant role)."""
+        return sum(1 for m in self.messages if m.get("role") == "assistant")
+
+    def get_hybrid_history(
+        self,
+        recent_count: int = 20,
+        summary: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get history with optional summary of older messages + verbatim recent.
+
+        Structure (per "Lost in the Middle" research — Liu et al. 2024):
+        LLMs attend best to START and END of context. So:
+        - Summary of older context goes FIRST in history (top of middle zone)
+        - Recent verbatim messages go LAST (near current message = high attention)
+
+        Args:
+            recent_count: Number of recent messages to include verbatim.
+            summary: Optional summary of older messages to prepend.
+
+        Returns:
+            List of messages in LLM format.
+        """
+        messages = []
+
+        # Older context summary (placed first — top of middle zone)
+        if summary:
+            messages.append({
+                "role": "user",
+                "content": f"[Earlier conversation summary]\n{summary}"
+            })
+            messages.append({
+                "role": "assistant",
+                "content": "I remember. Let me continue naturally from where we are."
+            })
+
+        # Recent verbatim messages (placed last — high attention zone)
+        recent = self.messages[-recent_count:] if len(self.messages) > recent_count else self.messages
+        for m in recent:
+            messages.append({"role": m["role"], "content": m["content"]})
+
+        return messages
+
+    def estimate_tokens(self) -> int:
+        """Estimate total token count of all messages.
+
+        Uses the rough heuristic: 1 token ≈ 4 characters (English average).
+        This avoids importing tiktoken for every message check while being
+        accurate enough for budget decisions.
+        """
+        total_chars = sum(len(m.get("content", "")) for m in self.messages)
+        return total_chars // 4
+
     def clear(self) -> None:
         """Clear all messages and reset session to initial state."""
         self.messages = []

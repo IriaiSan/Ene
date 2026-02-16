@@ -122,7 +122,7 @@ Non-Dad callers get "Access denied." for any restricted tool. This is enforced i
 
 ### Response Sanitization
 `_ene_clean_response()` runs on every outbound message:
-- Strips `## Reflection` blocks
+- Strips reflection blocks (comprehensive regex: all heading levels, bold, inline, case-insensitive — catches `## Reflection`, `### Internal Thoughts`, `**Analysis**`, `Let me reflect...`, `Note to self:`, etc.)
 - Strips file paths, platform IDs, stack traces
 - Removes markdown bold in public channels
 - Enforces 500 char limit (public) / 1900 char limit (Discord hard cap)
@@ -206,9 +206,17 @@ See `docs/SOCIAL.md` for full reference.
 - `view_person` — View full profile
 - `list_people` — List everyone with trust tiers
 
-### Legacy Consolidation
-- Still active for diary entry writing from session messages
-- Triggers when session messages exceed `memory_window` (50)
+### Context Window Management
+- **Hybrid history**: Recent 20 messages verbatim + running summary of older conversation
+- **"Lost in the Middle" layout**: Summary at top of history (moderate attention), recent at bottom (high attention)
+- **Running summaries**: Recursive summarization of older messages, cached per session key
+- **Identity re-anchoring**: Brief personality reminder injected every 10 assistant responses (high-attention zone between history and current message)
+- **Token estimation**: `Session.estimate_tokens()` using chars/4 heuristic
+
+### Smart Consolidation
+- **Dual trigger**: Fires when EITHER responded count > memory_window OR token estimate > 50% of budget (30K tokens)
+- **Responded count**: Only counts Ene's actual responses, not lurked messages (fixes busy server false triggers)
+- **Token warning**: Logs warning at 80% budget utilization, suggests `/new`
 - LLM summarizes old messages into diary entry
 - On failure: retries twice, dropping 10 oldest messages each time
 
@@ -217,7 +225,9 @@ See `docs/SOCIAL.md` for full reference.
 - Session key format: `{channel}:{chat_id}` (e.g., `discord:1306235136400035916`)
 - Stored as JSONL files in `~/.nanobot/sessions/`
 - Each message: `{"role": "user"|"assistant", "content": "...", "timestamp": "...", "tools_used": [...]}`
-- `/new` command: archives all messages via consolidation, starts fresh session
+- `/new` command: archives all messages via consolidation, clears running summary, starts fresh session
+- **Running summaries**: Cached in memory per session key. Generated via recursive summarization when session grows large enough. Cleared on `/new`.
+- **Token budget**: 60K tokens allocated for history. Compaction starts at 50%, warning at 80%.
 
 ## Git Workflow
 

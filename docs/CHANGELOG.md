@@ -4,6 +4,75 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-16] — Context Window & Pre-Launch Hardening
+
+**Context:** Final fixes before Ene goes live on Discord. Research-backed improvements to context management, persona drift prevention, and response cleaning. Based on comprehensive study of industry systems (Character.AI, Kindroid, ChatGPT, JanitorAI), academic papers (MemGPT, "Lost in the Middle", Recursive Summarization, StreamingLLM), and DeepSeek v3.2 specific behavior.
+
+### Fixed — Reflection Stripping
+- **Comprehensive regex** — Previous regex only caught `## Reflection` exactly. Now catches:
+  - All heading levels (`##`, `###`, `####`)
+  - Words around keywords (`## My Reflection`, `## Internal Thoughts`)
+  - Case variations (`REFLECTION`, `reflection`, `Reflection`)
+  - Bold-only headers (`**Reflection**`, `**Internal Thoughts**`)
+  - Inline reflection paragraphs (`Let me reflect...`, `Upon reflection...`, `Note to self:`)
+  - Keywords: Reflection, Internal, Thinking, Analysis, Self-Assessment, Observations, Note to Self
+- **43 new tests** in `tests/test_context_window.py`
+
+### Fixed — Consolidation Trigger
+- **Count responded exchanges, not lurked messages** — Previous trigger used `len(session.messages) > memory_window` which counted ALL messages including lurked. In a busy Discord server, 50 lurked messages = minutes of banter, triggering consolidation constantly.
+- **Dual trigger**: Now fires on EITHER responded count > memory_window OR estimated tokens > 50% of budget (30K tokens)
+- **Token warning** at 80% budget utilization
+
+### Added — Hybrid Context Window
+- **Running summaries** of older conversation (recursive summarization pattern from MemGPT/Wang et al. 2023)
+- **Recent verbatim window** — Last 20 messages kept word-for-word
+- **"Lost in the Middle" layout** (Liu et al. 2024) — Summary placed FIRST in history (top of middle zone, moderate attention), recent messages placed LAST (near current message, high attention zone)
+- Summary auto-generated and cached per session key, cleared on `/new`
+
+### Added — Identity Re-Anchoring
+- **Periodic personality injection** every 10 assistant responses to fight persona drift
+- Research: DeepSeek v3.2 documented to drift 30%+ after 8-12 turns
+- Brief reminder injected as system message in the high-attention zone (between history and current message)
+- Doesn't bloat context (single short sentence)
+
+### Added — Auto-Session Management
+- **Token-based compaction** — Sessions now estimated via chars/4 heuristic
+- **50% budget** = begin summarization, **80% budget** = warning log
+- `Session.estimate_tokens()` and `Session.get_responded_count()` helper methods
+
+### Modified
+- **`nanobot/agent/loop.py`** — Reflection regex rewrite, smart consolidation trigger, hybrid history assembly, running summary generation, re-anchoring check, token-based compaction
+- **`nanobot/agent/context.py`** — `build_messages()` now accepts `reanchor` parameter, injects system message near end of history
+- **`nanobot/session/manager.py`** — `get_hybrid_history()`, `estimate_tokens()`, `get_responded_count()` on Session
+
+### Test Results
+- 389 tests passing (43 new context window + 346 existing)
+- Zero regressions
+
+---
+
+## [2026-02-16] — Tool Hiding & Identity Split
+
+**Context:** Pre-launch hardening. Non-Dad users were seeing all tools (wasting tokens, causing "Access denied" weirdness) and Ene was leaking technical details (file names, workspace paths) when asked about herself.
+
+### Added — Caller-Aware Tool Filtering
+- **`get_definitions_for_caller()`** on ToolRegistry — Non-Dad callers get filtered tool list excluding RESTRICTED_TOOLS. LLM never sees they exist, saving tokens and preventing awkward exchanges.
+
+### Added — Split Identity Blocks
+- **`_get_identity_full()`** — Full technical identity for Dad (workspace paths, file locations, all tools, architecture details)
+- **`_get_identity_public()`** — Stripped version for everyone else:
+  - No file paths, framework names, or architecture details
+  - Explicit instructions on how to talk about herself naturally
+  - "I have my own personality" not "I have a SOUL.md file"
+  - "I remember things" not "I store memories in ChromaDB"
+
+### Modified
+- **`nanobot/agent/tools/registry.py`** — `get_definitions_for_caller()`
+- **`nanobot/agent/context.py`** — `_is_dad_caller()`, `_get_identity_full()`, `_get_identity_public()`
+- **`nanobot/agent/loop.py`** — Uses filtered tool definitions in `_run_agent_loop()`
+
+---
+
 ## [2026-02-16] — Social Module (People + Trust)
 
 **Context:** Ene needs to know WHO she's talking to before going live. Built a research-backed trust scoring system with people profiles, Bayesian reputation, and a social graph. Designed from psychology/sociology research (Josang 2002, Slovic 1993, Eagle 2009, Hall 2019, Dunbar 1992, Lewicki & Bunker 1995) and industry systems (eBay, Uber, StackOverflow, MMO guilds).

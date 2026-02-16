@@ -24,7 +24,7 @@ What Ene can do, how it works, and current limitations.
 |---|---|
 | Public channel responses | Max 500 characters, truncated at sentence boundary |
 | DM responses | Up to 1900 characters (Discord hard limit) |
-| Reflection stripping | `## Reflection` blocks are removed before sending |
+| Reflection stripping | All reflection blocks removed (##/###/####, bold, inline, case-insensitive) |
 | Path/ID redaction | File paths and platform IDs are replaced with `[redacted]` |
 | Error suppression | Stack traces and API errors never reach public chat |
 | Bold markdown | Stripped from public channel messages |
@@ -68,7 +68,11 @@ See `docs/MEMORY.md` for full architecture reference.
 | Memory decay | Working | Ebbinghaus-inspired forgetting curve for weak memories |
 | Migration | Working | Auto-migrates from legacy MEMORY.md/CORE.md on first run |
 | Session history | Working | Per-channel JSONL files. Full conversation context. |
-| Consolidation | Working | Diary entry writing when session exceeds 50 messages. |
+| Hybrid context | Working | Recent 20 messages verbatim + running summary of older. "Lost in the Middle" layout. |
+| Consolidation | Working | Smart trigger: counts Ene's responses (not lurked), + token budget (50% = compact, 80% = warn). |
+| Running summaries | Working | Recursive summarization of older conversation, cached per session. |
+| Identity re-anchoring | Working | Personality injection every 10 responses to fight persona drift. |
+| Token estimation | Working | Lightweight chars/4 estimate for budget-based session management. |
 
 ## Social System (People + Trust)
 
@@ -114,7 +118,7 @@ See `docs/SOCIAL.md` for full architecture reference.
 - **No vision**: Cannot process images. DeepSeek v3 doesn't support image input.
 - **No @mention detection**: Responds to text "ene", not Discord @mentions.
 - **Per-user identity via social module**: LLM sees a person card per message with name, tier, and approach guidance. Works for Discord and Telegram.
-- **Response pattern lock**: DeepSeek v3 tends to lock into formatting patterns (numbered lists, clinical analysis). Anti-formatting rules in SOUL.md and MEMORY.md mitigate this but don't fully prevent it.
+- **Response pattern lock**: DeepSeek v3.2 tends to lock into formatting patterns. Re-anchoring injection every 10 turns helps, but doesn't fully prevent it after very long sessions.
 - **Single-threaded processing**: Agent loop processes one message at a time. High traffic causes queuing delays.
 - **No mood system**: Planned but not yet implemented.
 - **Trust scoring active**: Bayesian trust with 5 tiers. Currently affects DM access and LLM tone guidance. Per-tool tier gating designed but not yet wired.
@@ -133,6 +137,12 @@ These are designed and specified but not yet built:
 - **Personality module** — Structured personality control beyond SOUL.md
 - **Sleep/wake cycle** — Based on schedule in drives.json
 - **Focus state** — "Busy with Dad" mode for public channels
-- **Context-aware consolidation** — Different summarization per channel type
+- **Input design system** — Pre-processing layer that selects relevant messages, cuts noise from busy servers
+- **Urdu language support** — Totli/cutesy style Urdu, not formal. Conversational slang and endearing broken speech patterns
 - **Emoji reactions** — Both automatic and LLM-requested via `[react:emoji]` tags
 - **GIF responses** — Tenor API integration via `[gif:search term]` tags
+- **Token compression** — LLMLingua-style compression of older turns (requires local model)
+- **Style drift detection** — Embed responses, track deviation from identity baseline
+- **Cascaded memory** — Kindroid-style progressive compression for medium-term history
+
+See `docs/RESEARCH.md` for full research reference and future ideas.

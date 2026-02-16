@@ -108,6 +108,8 @@ class AgentLoop:
         self._mcp_connected = False
         self._last_message_time = 0.0  # Ene: for idle tracking
         self._idle_watcher_task: asyncio.Task | None = None
+        self._session_summaries: dict[str, str] = {}  # Ene: running summaries per session key
+        self._reanchor_interval = 10  # Ene: re-inject identity every N assistant messages
 
         # Ene: Module registry (memory, personality, goals, etc.)
         self.module_registry = ModuleRegistry()
@@ -411,8 +413,28 @@ class AgentLoop:
         if not content:
             return None
 
-        # Strip reflection blocks (## Reflection, ## Internal, etc.)
-        content = re.sub(r'##\s*(?:Reflection|Internal|Thinking|Analysis).*?(?=\n##|\Z)', '', content, flags=re.DOTALL)
+        # Strip reflection blocks — catch all variations:
+        # ## Reflection, ### Internal Thoughts, ## My Analysis, **Reflection**, etc.
+        # Case-insensitive, any heading level (##, ###, ####), optional words around keyword
+        content = re.sub(
+            r'#{2,4}\s*(?:\*\*)?(?:[\w\s]*?)'
+            r'(?:Reflection|Internal|Thinking|Analysis|Self[- ]?Assessment|Observations?|Notes? to Self)'
+            r'(?:[\w\s]*?)(?:\*\*)?\s*\n.*?(?=\n#{2,4}\s|\Z)',
+            '', content, flags=re.DOTALL | re.IGNORECASE
+        )
+        # Strip bold-only reflection headers (no ## prefix): **Reflection**, **Internal Thoughts**
+        content = re.sub(
+            r'\*\*(?:[\w\s]*?)'
+            r'(?:Reflection|Internal|Thinking|Analysis|Self[- ]?Assessment|Observations?|Notes? to Self)'
+            r'(?:[\w\s]*?)\*\*\s*\n.*?(?=\n\*\*|\n#{2,4}\s|\Z)',
+            '', content, flags=re.DOTALL | re.IGNORECASE
+        )
+        # Strip inline reflection paragraphs: "Let me reflect...", "Thinking about this..."
+        content = re.sub(
+            r'\n(?:Let me (?:reflect|think|analyze)|Thinking (?:about|through)|Upon reflection|'
+            r'Internal (?:note|thought)|Note to self|My (?:reflection|analysis|thoughts?))[\s:,].*?(?=\n\n|\Z)',
+            '', content, flags=re.DOTALL | re.IGNORECASE
+        )
 
         # Strip leaked system paths
         content = re.sub(r'C:\\Users\\[^\s]+', '[redacted]', content)
@@ -518,6 +540,89 @@ class AgentLoop:
         except ValueError:
             return False
 
+    async def _generate_running_summary(self, session: Session, key: str) -> str | None:
+        """Generate or update a running summary of older conversation messages.
+
+        Uses recursive summarization: summarize the old summary + new messages
+        into a fresh summary. This keeps context compact while preserving
+        important information. (Wang et al. 2023, MemGPT pattern)
+
+        Only called when session has enough messages to warrant summarization.
+        """
+        # How many recent messages to keep verbatim
+        recent_count = 20
+
+        if len(session.messages) <= recent_count:
+            return self._session_summaries.get(key)
+
+        # Messages that need summarizing: everything before the recent window
+        older_messages = session.messages[:-recent_count]
+        if not older_messages:
+            return self._session_summaries.get(key)
+
+        # Build text of older messages
+        lines = []
+        for m in older_messages[-40:]:  # Cap at 40 messages to avoid huge prompts
+            if not m.get("content"):
+                continue
+            lines.append(f"{m['role'].upper()}: {m['content'][:300]}")
+        if not lines:
+            return self._session_summaries.get(key)
+
+        older_text = "\n".join(lines)
+
+        existing_summary = self._session_summaries.get(key, "")
+        if existing_summary:
+            prompt = f"""Update this conversation summary with the new messages below.
+Keep it concise (3-6 sentences). Focus on: topics discussed, who said what, decisions made, emotional tone.
+
+EXISTING SUMMARY:
+{existing_summary}
+
+NEW MESSAGES:
+{older_text}
+
+Write the updated summary:"""
+        else:
+            prompt = f"""Summarize this conversation concisely (3-6 sentences).
+Focus on: topics discussed, who said what, decisions made, emotional tone.
+
+CONVERSATION:
+{older_text}
+
+Write the summary:"""
+
+        try:
+            model = self.consolidation_model or self.model
+            response = await self.provider.chat(
+                messages=[
+                    {"role": "system", "content": "Write concise conversation summaries. No markdown. Plain text only."},
+                    {"role": "user", "content": prompt},
+                ],
+                model=model,
+            )
+            summary = (response.content or "").strip()
+            if summary:
+                # Strip markdown fences
+                if summary.startswith("```"):
+                    summary = summary.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                self._session_summaries[key] = summary
+                logger.debug(f"Updated running summary for {key}: {summary[:80]}")
+                return summary
+        except Exception as e:
+            logger.warning(f"Failed to generate running summary: {e}")
+
+        return self._session_summaries.get(key)
+
+    def _should_reanchor(self, session: Session) -> bool:
+        """Check if identity re-anchoring is needed to prevent persona drift.
+
+        Research (DeepSeek v3.2 documented): persona drift starts at 8-12 turns.
+        We inject a brief identity reminder every N assistant messages.
+        """
+        assistant_count = sum(1 for m in session.messages if m.get("role") == "assistant")
+        return assistant_count > 0 and assistant_count % self._reanchor_interval == 0
+
     async def _process_message(self, msg: InboundMessage, session_key: str | None = None) -> OutboundMessage | None:
         """
         Process a single inbound message.
@@ -581,6 +686,7 @@ class AgentLoop:
             session.clear()
             self.sessions.save(session)
             self.sessions.invalidate(session.key)
+            self._session_summaries.pop(key, None)  # Ene: clear running summary
 
             async def _consolidate_and_cleanup():
                 temp_session = Session(key=session.key)
@@ -594,16 +700,61 @@ class AgentLoop:
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="🐈 nanobot commands:\n/new — Start a new conversation\n/help — Show available commands")
         
-        if len(session.messages) > self.memory_window:
+        # Ene: smart consolidation — dual trigger:
+        # 1. Count only Ene's responded exchanges (not lurked messages)
+        #    In a busy Discord server, lurked messages pile up fast
+        # 2. Token estimate > 50% of context budget (auto-compaction)
+        #    DeepSeek v3.2 has 128K context, but we budget ~60K for history
+        #    to leave room for system prompt, tools, and output
+        HISTORY_TOKEN_BUDGET = 60_000
+        responded_count = session.get_responded_count()
+        estimated_tokens = session.estimate_tokens()
+        should_consolidate = (
+            responded_count > self.memory_window
+            or estimated_tokens > HISTORY_TOKEN_BUDGET * 0.5  # 50% = begin compaction
+        )
+        if should_consolidate:
             asyncio.create_task(self._consolidate_memory(session))
+            if estimated_tokens > HISTORY_TOKEN_BUDGET * 0.8:  # 80% = hard compact
+                logger.warning(
+                    f"Session {key} at {estimated_tokens} tokens (~{estimated_tokens * 100 // HISTORY_TOKEN_BUDGET}% budget), "
+                    f"consider /new to reset"
+                )
 
         self._set_tool_context(msg.channel, msg.chat_id)
+
+        # Ene: hybrid context window
+        # If session is large enough, use summary of older + verbatim recent
+        # (per "Lost in the Middle" research: summaries in middle, recent at end)
+        recent_verbatim = 20  # Recent messages kept word-for-word
+        if len(session.messages) > recent_verbatim + 5:
+            # Generate/update running summary for older messages
+            summary = await self._generate_running_summary(session, key)
+            history = session.get_hybrid_history(
+                recent_count=recent_verbatim,
+                summary=summary,
+            )
+        else:
+            history = session.get_history(max_messages=self.memory_window)
+
+        # Ene: identity re-anchoring to prevent persona drift
+        # DeepSeek v3.2 drifts after 8-12 turns. Inject a brief reminder
+        # near the end of history (high-attention zone) every N responses.
+        reanchor_text = None
+        if self._should_reanchor(session):
+            reanchor_text = (
+                "[Remember: You are Ene. Stay true to your personality — "
+                "casual, direct, a bit playful. Don't slip into generic assistant mode. "
+                "Be yourself.]"
+            )
+
         initial_messages = self.context.build_messages(
-            history=session.get_history(max_messages=self.memory_window),
+            history=history,
             current_message=msg.content,
             media=msg.media if msg.media else None,
             channel=msg.channel,
             chat_id=msg.chat_id,
+            reanchor=reanchor_text,
         )
         final_content, tools_used = await self._run_agent_loop(initial_messages)
 

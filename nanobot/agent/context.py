@@ -233,6 +233,7 @@ You are one person across all channels. Your memory is shared."""
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
+        reanchor: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -244,6 +245,8 @@ You are one person across all channels. Your memory is shared."""
             media: Optional list of local file paths for images/media.
             channel: Current channel (telegram, feishu, etc.).
             chat_id: Current chat/user ID.
+            reanchor: Optional identity re-anchoring text to inject near
+                the end of history (high-attention zone) to fight persona drift.
 
         Returns:
             List of messages including system prompt.
@@ -265,6 +268,12 @@ You are one person across all channels. Your memory is shared."""
 
         # History
         messages.extend(history)
+
+        # Ene: identity re-anchoring — inject near end of history (high-attention zone)
+        # Research: DeepSeek v3.2 drifts after 8-12 turns. Periodic injection
+        # of a brief personality reminder keeps Ene from going generic.
+        if reanchor:
+            messages.append({"role": "system", "content": reanchor})
 
         # Current message (with optional image attachments)
         user_content = self._build_user_content(current_message, media)
