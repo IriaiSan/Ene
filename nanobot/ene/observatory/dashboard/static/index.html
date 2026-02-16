@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ene Observatory</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <!-- Status Bar -->
+    <header id="status-bar">
+        <div class="status-left">
+            <span class="logo">Ene Observatory</span>
+            <span id="health-badge" class="badge">--</span>
+        </div>
+        <div class="status-right">
+            <span id="last-update">--</span>
+        </div>
+    </header>
+
+    <main>
+        <!-- Today's Summary -->
+        <section class="card summary-card">
+            <h2>Today</h2>
+            <div class="stat-grid">
+                <div class="stat">
+                    <span class="stat-value" id="today-cost">$0.00</span>
+                    <span class="stat-label">Cost</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="today-calls">0</span>
+                    <span class="stat-label">Calls</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="today-tokens">0</span>
+                    <span class="stat-label">Tokens</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="today-latency">0ms</span>
+                    <span class="stat-label">Avg Latency</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="today-errors">0</span>
+                    <span class="stat-label">Errors</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="today-callers">0</span>
+                    <span class="stat-label">Users</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Charts Row -->
+        <div class="chart-row">
+            <section class="card">
+                <h2>Cost (30 days)</h2>
+                <canvas id="chart-cost-daily"></canvas>
+            </section>
+            <section class="card">
+                <h2>Hourly Activity</h2>
+                <canvas id="chart-hourly"></canvas>
+            </section>
+        </div>
+
+        <!-- Breakdowns -->
+        <div class="chart-row">
+            <section class="card">
+                <h2>Cost by Model</h2>
+                <canvas id="chart-model"></canvas>
+            </section>
+            <section class="card">
+                <h2>Cost by Type</h2>
+                <canvas id="chart-type"></canvas>
+            </section>
+        </div>
+
+        <!-- Health Checks -->
+        <section class="card">
+            <h2>Health</h2>
+            <div id="health-checks" class="health-grid">
+                <p class="muted">Loading...</p>
+            </div>
+        </section>
+
+        <!-- Recent Calls -->
+        <section class="card">
+            <h2>Recent Calls</h2>
+            <div class="table-wrap">
+                <table id="recent-calls">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Type</th>
+                            <th>Model</th>
+                            <th>Tokens</th>
+                            <th>Cost</th>
+                            <th>Latency</th>
+                            <th>Caller</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="calls-body">
+                        <tr><td colspan="8" class="muted">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Experiments -->
+        <section class="card">
+            <h2>Experiments</h2>
+            <div id="experiments-list">
+                <p class="muted">No active experiments</p>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

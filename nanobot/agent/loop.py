@@ -31,7 +31,7 @@ from nanobot.ene import EneContext, ModuleRegistry
 
 # === Ene: Hardcoded identity and security ===
 DAD_IDS = {"telegram:8559611823", "discord:1175414972482846813"}
-RESTRICTED_TOOLS = {"exec", "write_file", "edit_file", "read_file", "list_dir", "spawn", "cron"}
+RESTRICTED_TOOLS = {"exec", "write_file", "edit_file", "read_file", "list_dir", "spawn", "cron", "view_metrics", "view_experiments"}
 
 
 class AgentLoop:
@@ -130,9 +130,17 @@ class AgentLoop:
         self._rate_limit_window = 30.0  # seconds
         self._rate_limit_max = 10  # max messages per window for non-Dad users
 
+        self._observatory_module = None  # Set in _register_ene_modules if available
         self._register_default_tools()
         self._register_ene_modules()
-    
+
+    @property
+    def _observatory(self):
+        """Quick access to the observatory collector (or None)."""
+        if self._observatory_module and self._observatory_module.collector:
+            return self._observatory_module.collector
+        return None
+
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
         # File tools (restrict to workspace if configured)
@@ -196,6 +204,11 @@ class AgentLoop:
             from nanobot.ene.social import SocialModule
             social_module = SocialModule()
             self.module_registry.register(social_module)
+
+            # Register Observatory Module (Module 3: metrics, monitoring, experiments)
+            from nanobot.ene.observatory import ObservatoryModule
+            self._observatory_module = ObservatoryModule()
+            self.module_registry.register(self._observatory_module)
 
         except Exception as e:
             logger.error(f"Failed to register Ene modules: {e}", exc_info=True)
@@ -323,6 +336,7 @@ class AgentLoop:
             if self._trace:
                 self._trace.log_llm_call(iteration, self.model)
 
+            _obs_start = _time.perf_counter()
             response = await self.provider.chat(
                 messages=messages,
                 tools=tool_defs,
@@ -330,6 +344,12 @@ class AgentLoop:
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
+            if self._observatory:
+                self._observatory.record(
+                    response, call_type="response", model=self.model,
+                    caller_id=self._current_caller_id or "system",
+                    latency_start=_obs_start,
+                )
 
             if self._trace:
                 self._trace.log_llm_response(response)
@@ -870,6 +890,7 @@ Write the summary:"""
 
         try:
             model = self.consolidation_model or self.model
+            _obs_start = _time.perf_counter()
             response = await self.provider.chat(
                 messages=[
                     {"role": "system", "content": "You are Ene summarizing a conversation you were part of. Write in first person. Be natural — not clinical. Use people's names, never 'the user' or 'the assistant.' No markdown. Plain text only."},
@@ -877,6 +898,11 @@ Write the summary:"""
                 ],
                 model=model,
             )
+            if self._observatory:
+                self._observatory.record(
+                    response, call_type="summary", model=model,
+                    caller_id="system", latency_start=_obs_start,
+                )
             summary = (response.content or "").strip()
             if summary:
                 # Strip markdown fences
@@ -1221,6 +1247,7 @@ Write the diary entry now:"""
 
         for attempt in range(max_retries + 1):
             try:
+                _obs_start = _time.perf_counter()
                 response = await self.provider.chat(
                     messages=[
                         {"role": "system", "content": "You are Ene writing in your personal diary. Write in first person. Be natural, warm, and genuine — like a real person journaling, not a clinical observer. Use people's names (Dad, Az, CCC, etc.), NEVER say 'the user' or 'the assistant.' No JSON, no markdown headers."},
@@ -1228,6 +1255,11 @@ Write the diary entry now:"""
                     ],
                     model=model,
                 )
+                if self._observatory:
+                    self._observatory.record(
+                        response, call_type="diary", model=model,
+                        caller_id="system", latency_start=_obs_start,
+                    )
                 text = (response.content or "").strip()
                 if not text:
                     logger.warning("Diary consolidation: empty response, skipping")

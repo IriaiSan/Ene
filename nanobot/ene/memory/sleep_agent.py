@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import time as _time
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
@@ -20,6 +21,7 @@ from loguru import logger
 
 if TYPE_CHECKING:
     from nanobot.ene.memory.system import MemorySystem
+    from nanobot.ene.observatory.collector import MetricsCollector
     from nanobot.providers.base import LLMProvider
 
 
@@ -94,22 +96,30 @@ class SleepTimeAgent:
         provider: "LLMProvider",
         model: str | None = None,
         temperature: float = 0.3,
+        observatory: "MetricsCollector | None" = None,
     ):
         self._system = system
         self._provider = provider
         self._model = model
         self._temperature = temperature
+        self._observatory = observatory
 
     async def _llm_call(self, prompt: str) -> str:
         """Make a single LLM call and return the response content."""
         messages = [{"role": "user", "content": prompt}]
 
+        _obs_start = _time.perf_counter()
         response = await self._provider.chat(
             messages=messages,
             model=self._model,
             max_tokens=2048,
             temperature=self._temperature,
         )
+        if self._observatory:
+            self._observatory.record(
+                response, call_type="sleep", model=self._model or "unknown",
+                caller_id="system", latency_start=_obs_start,
+            )
 
         return response.content or ""
 

@@ -173,6 +173,19 @@ class SocialConfig(BaseModel):
     sentiment_analysis: bool = False    # Enable LLM sentiment analysis on idle (costs API calls)
 
 
+class ObservatoryConfig(BaseModel):
+    """Observatory metrics and monitoring configuration."""
+    enabled: bool = True
+    db_path: str = ""  # Empty = auto (workspace/observatory.db)
+    dashboard_port: int = 18791
+    dashboard_enabled: bool = True
+    health_check_interval: int = 300  # seconds between health checks
+    daily_report_hour: int = 8  # Hour to send daily report (0-23)
+    cost_spike_multiplier: float = 2.0  # Alert if today > N× average
+    error_rate_threshold: float = 0.10  # Alert if error rate > 10%
+    latency_p95_threshold: int = 30000  # Alert if p95 > 30s (ms)
+
+
 class AgentDefaults(BaseModel):
     """Default agent configuration."""
     workspace: str = "~/.nanobot/workspace"
@@ -185,6 +198,7 @@ class AgentDefaults(BaseModel):
     diary_context_days: int = 3  # Ene: how many diary days to load into context
     memory: MemoryConfig = Field(default_factory=MemoryConfig)  # Ene: memory system config
     social: SocialConfig = Field(default_factory=SocialConfig)  # Ene: social/trust config
+    observatory: ObservatoryConfig = Field(default_factory=ObservatoryConfig)  # Ene: metrics
 
 
 class AgentsConfig(BaseModel):

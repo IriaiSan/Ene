@@ -4,6 +4,51 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-17e] — Observatory: Metrics, Dashboard, Health, A/B Testing
+
+### Added — Complete Observatory System (`nanobot/ene/observatory/`)
+New Ene module providing full observability into LLM operations.
+
+#### Metrics Collection (Phase 1)
+- `pricing.py` — Model pricing table (OpenRouter rates) for cost calculation
+- `store.py` — SQLite MetricsStore persisting every LLM call (tokens, cost, latency, caller, errors)
+- `collector.py` — MetricsCollector wrapping LLMResponse into records
+- Instrumented 3 LLM call sites in `loop.py` (response, summary, diary) + `sleep_agent.py`
+- ObservatoryModule registered as Ene module (Module 3)
+
+#### Health Monitoring & Alerts (Phase 2)
+- `health.py` — HealthMonitor with checks: error rate, cost spikes, latency, activity
+- `reporter.py` — ReportGenerator for daily/weekly summaries and cost breakdowns
+- Alert delivery via MessageBus → DMs Dad on Discord/Telegram
+- Daily reports: cost, tokens, calls, breakdowns by model/type/caller, errors, latency
+- Cooldown system prevents alert spam (30 min between repeated alerts)
+
+#### Web Dashboard (Phase 3)
+- `dashboard/server.py` — aiohttp server at localhost:18791
+- `dashboard/api.py` — 14 JSON API endpoints (summary, cost, activity, health, experiments, SSE)
+- `dashboard/static/` — Vanilla JS + Chart.js dark-theme SPA
+- Real-time SSE updates (5s), smooth Chart.js animations, no flashing
+- Sections: today summary, 30-day cost chart, hourly activity, model/type breakdowns, health checks, recent calls, experiments
+
+#### A/B Testing Framework (Phase 4)
+- `experiments.py` — ExperimentEngine with Variant/Experiment dataclasses
+- Assignment methods: random (weighted), round_robin, caller_sticky (hash-based)
+- Auto-completion at target call count
+- Statistical comparison: cost, latency, quality scoring, winner suggestion
+- Full experiment lifecycle: create, pause, resume, complete
+
+#### Ene Self-Awareness (Phase 5)
+- `tools.py` — `view_metrics` and `view_experiments` tools (Dad-only, restricted)
+- Ene can check her own usage stats, costs, and experiment status
+
+### Changed — Config
+- Added `ObservatoryConfig` to schema.py (enabled, db_path, dashboard_port, health thresholds)
+
+### Tests
+- 72 new tests covering store, collector, pricing (all passing)
+
+---
+
 ## [2026-02-17d] — Personality Depoisoning
 
 ### Fixed — Personality Tone Poisoning
