@@ -292,9 +292,14 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
 
+            # Ene: non-Dad callers don't see restricted tools at all
+            # Saves tokens and prevents "Access denied" weirdness
+            tool_defs = self.tools.get_definitions_for_caller(
+                self._current_caller_id, DAD_IDS, RESTRICTED_TOOLS
+            )
             response = await self.provider.chat(
                 messages=messages,
-                tools=self.tools.get_definitions(),
+                tools=tool_defs,
                 model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,

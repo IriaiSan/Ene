@@ -34,6 +34,23 @@ class ToolRegistry:
     def get_definitions(self) -> list[dict[str, Any]]:
         """Get all tool definitions in OpenAI format."""
         return [tool.to_schema() for tool in self._tools.values()]
+
+    def get_definitions_for_caller(
+        self, caller_id: str, dad_ids: set[str], restricted: set[str]
+    ) -> list[dict[str, Any]]:
+        """Get tool definitions filtered by caller permissions.
+
+        Non-Dad callers don't see restricted tools at all — the LLM
+        never knows they exist, saving tokens and preventing awkward
+        "Access denied" exchanges.
+        """
+        if caller_id in dad_ids:
+            return self.get_definitions()
+        return [
+            tool.to_schema()
+            for tool in self._tools.values()
+            if tool.name not in restricted
+        ]
     
     async def execute(self, name: str, params: dict[str, Any]) -> str:
         """

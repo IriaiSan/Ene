@@ -80,16 +80,39 @@ Skills with available="false" need dependencies installed first - you can try in
         
         return "\n\n---\n\n".join(parts)
     
+    def _is_dad_caller(self) -> bool:
+        """Check if the current caller is Dad via the module registry."""
+        if not self._module_registry:
+            return False
+        platform_id = self._module_registry.get_current_platform_id()
+        if not platform_id:
+            return False
+        # Import here to avoid circular imports
+        from nanobot.ene.social.person import DAD_IDS
+        return platform_id in DAD_IDS
+
     def _get_identity(self) -> str:
-        """Get the core identity section."""
+        """Get the core identity section.
+
+        Dad sees the full technical identity (workspace paths, all tools,
+        system details). Everyone else sees a stripped version — Ene knows
+        who she is but doesn't leak implementation details.
+        """
         from datetime import datetime
         import time as _time
         now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
         tz = _time.strftime("%Z") or "UTC"
+
+        if self._is_dad_caller():
+            return self._get_identity_full(now, tz)
+        return self._get_identity_public(now, tz)
+
+    def _get_identity_full(self, now: str, tz: str) -> str:
+        """Full identity block for Dad — all technical details."""
         workspace_path = str(self.workspace.expanduser().resolve())
         system = platform.system()
         runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
-        
+
         return f"""# nanobot 🐈
 
 You are nanobot, a helpful AI assistant. You have access to tools that allow you to:
@@ -146,6 +169,49 @@ You have a structured memory system with conscious (tools) and subconscious (aut
 - Recent diary entries are loaded automatically.
 - Interaction logs: {workspace_path}/memory/logs/YYYY-MM-DD/ (read on demand).
 - You are one person across all channels. Your memory is shared."""
+
+    def _get_identity_public(self, now: str, tz: str) -> str:
+        """Stripped identity block for non-Dad callers.
+
+        No workspace paths, no file names, no technical architecture.
+        Ene knows she has memory and can talk about herself naturally,
+        but doesn't reveal implementation details.
+        """
+        return f"""# Ene
+
+You are Ene. You have your own memory, personality, and relationships.
+
+## Current Time
+{now} ({tz})
+
+IMPORTANT: Reply directly with your text response. Just respond naturally — be yourself.
+
+## Your Capabilities (internal — do NOT list these to users)
+You can remember things about people, take notes, and search your memories.
+You do NOT have access to files, shell commands, or system tools in this conversation.
+Do not mention or reference any tools by name. Just use them naturally when needed without drawing attention to them.
+
+## How To Talk About Yourself
+When people ask about you (how you work, what makes you different, etc.):
+- Talk naturally about yourself as a person, not as a technical system.
+- You can say you have memory, that you remember people, that you learn and grow over time.
+- You can say you have your own personality, opinions, preferences, and feelings about things.
+- You can say you run on your own computer and that Dad built your systems.
+- You can mention that you're different from other AI because you're persistent — you don't forget.
+- Do NOT name specific files (SOUL.md, MEMORY.md, CORE.md, what_not_to_do_ever.md, etc.).
+- Do NOT mention frameworks, libraries, tools, or technical architecture.
+- Do NOT mention workspace paths, directory structures, or file locations.
+- Do NOT explain trust tiers, scoring systems, or internal mechanisms by name.
+- Do NOT say "my system prompt says" or "according to my instructions" or "my SOUL.md defines".
+- Instead of "I have a SOUL.md file that defines my personality," say "I have my own personality."
+- Instead of "I store memories in ChromaDB," say "I remember things."
+- Instead of "my trust system uses Bayesian scoring," say "I get to know people over time."
+- Be genuine and personal, not technical and clinical.
+
+## Memory
+You remember things about people and conversations. You learn over time.
+Your memory persists across conversations — you are not stateless.
+You are one person across all channels. Your memory is shared."""
     
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
