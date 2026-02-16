@@ -172,6 +172,12 @@ class AgentLoop:
                 mem_module = MemoryModule()
 
             self.module_registry.register(mem_module)
+
+            # Register Social Module (Module 2: people, trust, social graph)
+            from nanobot.ene.social import SocialModule
+            social_module = SocialModule()
+            self.module_registry.register(social_module)
+
         except Exception as e:
             logger.error(f"Failed to register Ene modules: {e}", exc_info=True)
 
@@ -467,6 +473,46 @@ class AgentLoop:
         # Otherwise lurk — store in session but don't respond
         return False
 
+    def _is_dm(self, msg: InboundMessage) -> bool:
+        """Check if a message is a direct message (not in a server/group)."""
+        if msg.channel == "discord":
+            return msg.metadata.get("guild_id") is None
+        if msg.channel == "telegram":
+            return not msg.metadata.get("is_group", False)
+        return False
+
+    def _dm_access_allowed(self, msg: InboundMessage) -> bool:
+        """Check if sender has sufficient trust tier for DM access.
+
+        Only people at 'familiar' or higher can DM Ene.
+        Dad always passes. Zero-cost check — no LLM involved.
+        """
+        from nanobot.ene.social.trust import TIER_ORDER
+
+        DM_MINIMUM_TIER = "familiar"
+
+        # Dad always passes
+        caller_id = f"{msg.channel}:{msg.sender_id}"
+        if caller_id in DAD_IDS:
+            return True
+
+        # Look up person via social module
+        social = self.module_registry.get_module("social")
+        if social is None or social.registry is None:
+            # Social module not loaded — fall back to Dad-only
+            return caller_id in DAD_IDS
+
+        person = social.registry.get_by_platform_id(caller_id)
+        if person is None:
+            return False
+
+        try:
+            person_idx = TIER_ORDER.index(person.trust.tier)
+            min_idx = TIER_ORDER.index(DM_MINIMUM_TIER)
+            return person_idx >= min_idx
+        except ValueError:
+            return False
+
     async def _process_message(self, msg: InboundMessage, session_key: str | None = None) -> OutboundMessage | None:
         """
         Process a single inbound message.
@@ -485,6 +531,22 @@ class AgentLoop:
         # Ene: track who's talking for tool permission checks
         self._current_caller_id = f"{msg.channel}:{msg.sender_id}"
         self._last_message_time = _time.time()  # Ene: update for idle tracking
+
+        # Ene: tell modules who is speaking (for person cards, trust context)
+        self.module_registry.set_current_sender(
+            msg.sender_id, msg.channel, msg.metadata or {}
+        )
+
+        # Ene: DM access gate — block untrusted DMs before LLM call (zero cost)
+        if self._is_dm(msg) and not self._dm_access_allowed(msg):
+            logger.info(f"DM rejected from {msg.channel}:{msg.sender_id} (trust too low)")
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="Sorry, I can't chat in DMs right now! Come say hi in the server first \U0001f499",
+                reply_to=msg.metadata.get("message_id") if msg.metadata else None,
+                metadata=msg.metadata or {},
+            )
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")

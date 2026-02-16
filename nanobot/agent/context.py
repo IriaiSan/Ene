@@ -132,6 +132,11 @@ You have a structured memory system with conscious (tools) and subconscious (aut
 - Each entry has an [id:xxx] tag for editing/deleting.
 - Sections help organize: identity (who you are), people (who you know), preferences (your rules), context (current situation), scratch (temporary notes).
 
+### Social Tools
+- **update_person_note(person_name, note)** — Record something about a person (interests, facts, impressions).
+- **view_person(person_name)** — View a person's full profile, notes, trust, and connections.
+- **list_people()** — List everyone you know with their trust tiers.
+
 ### Subconscious (automatic)
 - After idle time: facts are extracted, entities tracked, diary updated.
 - Daily: reflections generated, contradictions resolved, weak memories pruned.

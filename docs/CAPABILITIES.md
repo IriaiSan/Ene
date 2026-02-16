@@ -9,7 +9,7 @@ What Ene can do, how it works, and current limitations.
 | Capability | Status | Details |
 |---|---|---|
 | Discord text chat | Working | Responds in public channels when mentioned ("ene") |
-| Discord DMs | Working | Responds to all DMs |
+| Discord DMs | Working | Responds to DMs from `familiar`+ tier (14+ days known). Strangers get friendly rejection. |
 | Telegram | Working | Dad-only (allowFrom restricted) |
 | Reply threading | Working | Responses reply to the original message |
 | Typing indicator | Working | Shows "Ene is typing..." during LLM processing |
@@ -49,6 +49,9 @@ These tools are available to the LLM during conversations. Restricted tools are 
 | `edit_memory` | Everyone | Edit core memory entry by ID |
 | `delete_memory` | Everyone | Delete from core (optional archive to vector store) |
 | `search_memory` | Everyone | Search long-term vector memory |
+| `update_person_note` | Everyone | Record something about a person |
+| `view_person` | Everyone | View a person's full profile, trust, notes, connections |
+| `list_people` | Everyone | List all known people with trust tiers |
 
 ## Memory (v2)
 
@@ -66,6 +69,22 @@ See `docs/MEMORY.md` for full architecture reference.
 | Migration | Working | Auto-migrates from legacy MEMORY.md/CORE.md on first run |
 | Session history | Working | Per-channel JSONL files. Full conversation context. |
 | Consolidation | Working | Diary entry writing when session exceeds 50 messages. |
+
+## Social System (People + Trust)
+
+See `docs/SOCIAL.md` for full architecture reference.
+
+| Feature | Status | Details |
+|---|---|---|
+| People profiles | Working | Auto-created on first interaction. One JSON file per person. |
+| Trust scoring | Working | Bayesian + temporal modulators. 5 tiers with time gates. |
+| DM access gate | Working | Only `familiar`+ can DM Ene. Below that → rejection, zero LLM cost. |
+| Person card injection | Working | Per-message context with name, tier, stats, approach guidance. |
+| Social graph | Working | Connections between people, mutual friends, BFS path finding. |
+| Trust decay | Working | Exponential decay after 30 inactive days, 60-day half-life, 50% floor. |
+| Dad hardcoded | Working | Always 1.0/inner_circle. Never calculated, never decays. |
+| Violation tracking | Working | Immediate trust drops with 3:1 asymmetric negative weighting. |
+| Daily snapshots | Working | Trust history recorded daily for audit trail. |
 
 ## Identity & Security
 
@@ -94,11 +113,11 @@ See `docs/MEMORY.md` for full architecture reference.
 
 - **No vision**: Cannot process images. DeepSeek v3 doesn't support image input.
 - **No @mention detection**: Responds to text "ene", not Discord @mentions.
-- **No per-user identity in prompts**: LLM doesn't know WHO is talking unless told by SOUL.md/MEMORY.md context. People recognition system is planned.
+- **Per-user identity via social module**: LLM sees a person card per message with name, tier, and approach guidance. Works for Discord and Telegram.
 - **Response pattern lock**: DeepSeek v3 tends to lock into formatting patterns (numbered lists, clinical analysis). Anti-formatting rules in SOUL.md and MEMORY.md mitigate this but don't fully prevent it.
 - **Single-threaded processing**: Agent loop processes one message at a time. High traffic causes queuing delays.
 - **No mood system**: Planned but not yet implemented.
-- **No trust scoring**: Planned but not yet implemented. Currently all non-Dad users are treated equally.
+- **Trust scoring active**: Bayesian trust with 5 tiers. Currently affects DM access and LLM tone guidance. Per-tool tier gating designed but not yet wired.
 - **No sleep/wake cycle**: Planned but not yet implemented.
 - **No impulse layer**: All responses currently go through LLM. Fast pre-LLM responses are planned.
 - **Web search disabled**: Brave API key not configured in config.json.
@@ -108,10 +127,10 @@ See `docs/MEMORY.md` for full architecture reference.
 These are designed and specified but not yet built:
 
 - **ene_runtime/** — Daemon wrapper with trust, impulse, mood, and enrichment layers
-- **Trust scoring** — Reputation system based on user behavior
+- **Per-tool trust gating** — Replace binary Dad/non-Dad tool access with tier-based permissions
 - **Impulse layer** — Pre-LLM fast responses (reactions, greetings)
 - **Mood tracker** — Float-based mood that drifts with interactions
-- **People database** — Per-user profile files with trust tiers
+- **Personality module** — Structured personality control beyond SOUL.md
 - **Sleep/wake cycle** — Based on schedule in drives.json
 - **Focus state** — "Busy with Dad" mode for public channels
 - **Context-aware consolidation** — Different summarization per channel type

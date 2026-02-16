@@ -23,7 +23,8 @@ C:\Users\Ene\
 │   │   │   └── tools\            # Tool implementations
 │   │   ├── ene\                  # Ene subsystem modules
 │   │   │   ├── __init__.py       # EneModule base, EneContext, ModuleRegistry
-│   │   │   └── memory\           # Module 1: Memory system
+│   │   │   ├── memory\           # Module 1: Memory system
+│   │   │   └── social\           # Module 2: People + Trust
 │   │   │       ├── __init__.py   # MemoryModule entry point
 │   │   │       ├── core_memory.py    # Editable core memory (JSON, token-budgeted)
 │   │   │       ├── vector_memory.py  # ChromaDB vector store (3 collections)
@@ -42,7 +43,8 @@ C:\Users\Ene\
 │   ├── tests\
 │   │   └── ene\                  # Ene module tests
 │   │       ├── test_module_registry.py
-│   │       └── memory\           # Memory module tests (148 tests)
+│   │       ├── memory\           # Memory module tests (148 tests)
+│   │       └── social\           # Social module tests (143 tests)
 │   └── docs\                     # Ene documentation (you are here)
 │
 └── .nanobot\                     # Runtime data (not in git)
@@ -81,18 +83,25 @@ Discord User sends message
 [Agent Loop]                       agent/loop.py
   _process_message()
   ├── Set _current_caller_id (for tool permissions)
+  ├── Set current sender on ModuleRegistry (for social context)
   ├── _should_respond() — lurk or respond?
   │   ├── Dad → always respond
   │   ├── DM → always respond
   │   ├── Contains "ene" → respond
   │   └── Otherwise → store in session, return None
+  ├── DM access gate — block untrusted DMs (zero LLM cost)
+  │   ├── Is DM? (Discord: no guild_id, Telegram: not group)
+  │   ├── Trust tier < familiar? → friendly rejection, return
+  │   └── Dad always passes
   ├── Check slash commands (/new, /help)
   ├── Trigger consolidation if buffer > memory_window
   ├── Build context (system prompt + history + current message)
+  │   └── Person card injected via social module (name, tier, stats)
   ├── Call LLM via provider
   ├── Tool execution loop (with RESTRICTED_TOOLS check)
   ├── Store raw response in session
-  └── _ene_clean_response() — sanitize output
+  ├── _ene_clean_response() — sanitize output
+  └── Notify modules (social records interaction, updates trust)
         │
         ▼
 [Outbound Message Bus]
@@ -167,6 +176,35 @@ See `docs/MEMORY.md` for full reference.
 - `edit_memory` — Edit core entry by ID
 - `delete_memory` — Remove from core (optional archive to vector store)
 - `search_memory` — Search long-term vector memory
+
+## Social System (People + Trust)
+
+See `docs/SOCIAL.md` for full reference.
+
+### People Profiles
+- One JSON file per person in `memory/social/people/`
+- Platform ID → Person ID index for O(1) lookup
+- Auto-created on first interaction, Dad pre-seeded on init
+- Notes, aliases, connections tracked per person
+
+### Trust Scoring
+- Bayesian core (Beta Reputation System) with temporal modulators
+- 5 tiers: stranger → acquaintance → familiar → trusted → inner_circle
+- Time gates prevent speed-running trust (minimum days per tier)
+- Geometric mean of 4 signals prevents one-dimensional gaming
+- 3:1 asymmetric negative weighting — trust breaks faster than it builds
+- Exponential decay for inactive users (60-day half-life, 50% floor)
+- Dad hardcoded at 1.0/inner_circle, immutable
+
+### DM Access Gate
+- Only `familiar` tier (14+ days, score >= 0.35) can DM Ene
+- Below that → system rejection message, no LLM call, zero cost
+- Enforced at pipeline level before any LLM processing
+
+### Social Tools
+- `update_person_note` — Record things about people
+- `view_person` — View full profile
+- `list_people` — List everyone with trust tiers
 
 ### Legacy Consolidation
 - Still active for diary entry writing from session messages

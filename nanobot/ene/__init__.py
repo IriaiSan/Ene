@@ -75,6 +75,14 @@ class EneModule(ABC):
         """
         return None
 
+    def set_sender_context(self, platform_id: str, metadata: dict) -> None:
+        """Optional: receive current sender info before context building.
+
+        Called before get_context_block_for_message() so modules can
+        look up the speaker and prepare per-message context.
+        Default is a no-op.
+        """
+
     def get_context_block_for_message(self, message: str) -> str | None:
         """Return dynamic context based on the current user message.
 
@@ -115,6 +123,34 @@ class ModuleRegistry:
 
     def __init__(self) -> None:
         self._modules: dict[str, EneModule] = {}
+        self._current_sender_id: str = ""
+        self._current_channel: str = ""
+        self._current_metadata: dict = {}
+
+    def set_current_sender(
+        self, sender_id: str, channel: str, metadata: dict
+    ) -> None:
+        """Set the current sender for context injection.
+
+        Called before build_messages() so modules know who is speaking.
+        """
+        self._current_sender_id = sender_id
+        self._current_channel = channel
+        self._current_metadata = metadata
+
+    def get_current_platform_id(self) -> str:
+        """Get current sender's platform ID (e.g., 'discord:123456')."""
+        if self._current_sender_id:
+            return f"{self._current_channel}:{self._current_sender_id}"
+        return ""
+
+    def get_current_metadata(self) -> dict:
+        """Get current sender's metadata."""
+        return self._current_metadata
+
+    def get_module(self, name: str) -> "EneModule | None":
+        """Get a module by name (alias for get)."""
+        return self._modules.get(name)
 
     def register(self, module: EneModule) -> None:
         """Register an Ene module."""
@@ -169,8 +205,22 @@ class ModuleRegistry:
     def get_all_dynamic_context(self, message: str) -> str:
         """Aggregate dynamic context from all modules for a given message.
 
+        First tells modules who is speaking (via set_sender_context),
+        then collects dynamic context blocks.
         Returns a single string with all dynamic blocks joined by newlines.
         """
+        # Tell modules who is speaking before asking for context
+        platform_id = self.get_current_platform_id()
+        metadata = self.get_current_metadata()
+        if platform_id:
+            for module in self._modules.values():
+                try:
+                    module.set_sender_context(platform_id, metadata)
+                except Exception as e:
+                    logger.error(
+                        f"Error setting sender context on '{module.name}': {e}"
+                    )
+
         blocks: list[str] = []
         for module in self._modules.values():
             try:

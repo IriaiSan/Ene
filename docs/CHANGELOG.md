@@ -4,6 +4,41 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-16] — Social Module (People + Trust)
+
+**Context:** Ene needs to know WHO she's talking to before going live. Built a research-backed trust scoring system with people profiles, Bayesian reputation, and a social graph. Designed from psychology/sociology research (Josang 2002, Slovic 1993, Eagle 2009, Hall 2019, Dunbar 1992, Lewicki & Bunker 1995) and industry systems (eBay, Uber, StackOverflow, MMO guilds).
+
+### Added — Social Module (`nanobot/ene/social/`)
+- **PersonProfile + PersonRegistry** (`person.py`) — File-per-person storage in `memory/social/people/`, O(1) platform ID lookup via `index.json`, auto-created Dad profile with max trust, CRUD with disk persistence, notes, aliases, connections
+- **TrustCalculator** (`trust.py`) — Hybrid Bayesian + temporal modulator scoring:
+  - Beta Reputation core: `(pos+1)/(pos+neg*3+2)` (starts uncertain at 0.5)
+  - Geometric mean of 4 modulators: tenure, consistency, session depth, timing entropy
+  - 3:1 asymmetric weighting for negative events (Slovic 1993)
+  - Time gates: acquaintance=3d, familiar=14d, trusted=60d, inner_circle=180d (Hall 2019)
+  - Exponential decay: 60-day half-life, floored at 50% of original score
+  - Anti-gaming: geometric mean prevents one-dimensional signal inflation
+  - Dad hardcoded at 1.0/inner_circle, immutable
+- **SocialGraph** (`graph.py`) — Connection queries, mutual friends, BFS shortest path (max depth configurable), context rendering
+- **3 social tools** (`tools.py`):
+  - `update_person_note(person_name, note)` — Record things about people
+  - `view_person(person_name)` — Full profile with trust, notes, connections
+  - `list_people()` — All known people sorted by trust score
+- **SocialModule** (`__init__.py`) — EneModule entry point with person card injection, interaction recording, daily maintenance (decay + history snapshots)
+- **DM access gate** — Only `familiar` tier (score >= 0.35, 14+ days known) can DM Ene. Below that → system rejection, no LLM call, zero cost
+- **143 unit tests** across 5 test files (`tests/ene/social/`)
+
+### Modified
+- **`nanobot/ene/__init__.py`** — Sender identity bridge: `set_current_sender()`, `get_current_platform_id()`, `get_current_metadata()`, `get_module()` on ModuleRegistry. `set_sender_context()` default on EneModule. Updated `get_all_dynamic_context()` to call sender context before collecting blocks.
+- **`nanobot/agent/loop.py`** — SocialModule registration in `_register_ene_modules()`. Sender wiring (`set_current_sender()`) in `_process_message()`. DM access gate check before LLM call with `_is_dm()` and `_dm_access_allowed()` helpers.
+- **`nanobot/config/schema.py`** — Added `SocialConfig` class (enabled, decay_inactive_days, decay_rate_per_day, sentiment_analysis). Added to `AgentDefaults`.
+- **`nanobot/agent/context.py`** — Social tools documentation in identity block.
+
+### Test Results
+- 346 tests passing (143 social + 148 memory + 55 existing)
+- Zero regressions
+
+---
+
 ## [2026-02-16] — Memory System v2
 
 **Context:** Complete redesign of Ene's memory system. Replaced append-only MEMORY.md with structured, editable core memory + ChromaDB vector store + sleep-time background processing. Built on a modular plugin architecture for future subsystem modules (personality, goals, timeline, etc.).

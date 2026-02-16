@@ -165,6 +165,14 @@ class MemoryConfig(BaseModel):
     diary_context_days: int = 3  # How many diary days to load into context
 
 
+class SocialConfig(BaseModel):
+    """Social/trust system configuration."""
+    enabled: bool = True
+    decay_inactive_days: int = 30       # Start decaying trust after this many inactive days
+    decay_rate_per_day: float = 0.005   # Trust lost per inactive day (after grace period)
+    sentiment_analysis: bool = False    # Enable LLM sentiment analysis on idle (costs API calls)
+
+
 class AgentDefaults(BaseModel):
     """Default agent configuration."""
     workspace: str = "~/.nanobot/workspace"
@@ -176,6 +184,7 @@ class AgentDefaults(BaseModel):
     memory_window: int = 50
     diary_context_days: int = 3  # Ene: how many diary days to load into context
     memory: MemoryConfig = Field(default_factory=MemoryConfig)  # Ene: memory system config
+    social: SocialConfig = Field(default_factory=SocialConfig)  # Ene: social/trust config
 
 
 class AgentsConfig(BaseModel):
