@@ -86,6 +86,9 @@ class AgentLoop:
         if self.memory.migrate_legacy():
             logger.info("Migrated legacy memory files (MEMORY.md/HISTORY.md) to new architecture")
 
+        # Ene: Module registry must be created before ContextBuilder (which uses it)
+        self.module_registry = ModuleRegistry()
+
         self.context = ContextBuilder(workspace, module_registry=self.module_registry)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
@@ -111,8 +114,6 @@ class AgentLoop:
         self._session_summaries: dict[str, str] = {}  # Ene: running summaries per session key
         self._reanchor_interval = 10  # Ene: re-inject identity every N assistant messages
 
-        # Ene: Module registry (memory, personality, goals, etc.)
-        self.module_registry = ModuleRegistry()
         self._register_default_tools()
         self._register_ene_modules()
     
