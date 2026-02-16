@@ -4,6 +4,25 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-17i] — Watchdog Module (periodic self-integrity audits)
+
+### Added — New Ene module: `nanobot/ene/watchdog/`
+Periodic background audits of diary entries and core memory to catch corruption before it compounds.
+
+- **`WatchdogModule`** (`__init__.py`): EneModule subclass hooking into `on_idle` and `on_daily` lifecycle events
+  - Quick audit: triggers after 10 min idle, 30 min cooldown, checks new diary entries only
+  - Deep audit: daily (4 AM), checks full diary + core memory
+  - Alerts Dad via DM (Discord → Telegram fallback) when issues found
+- **`WatchdogAuditor`** (`auditor.py`): Core audit engine
+  - Diary audit: LLM checks for wrong attribution, hallucinated events, spoofing artifacts, format issues
+  - Core memory audit: LLM checks for spoofing-planted entries, contradictions, suspicious facts
+  - Auto-fix: critical diary issues are rewritten by LLM (max 3 per audit)
+  - Incremental: tracks last-audited line count to only check new entries
+- **Cost control**: ~1 LLM call for quick audit, ~2-3 for deep audit, 30-min cooldown
+- **Registration**: Added to `_register_ene_modules()` in `loop.py` as Module 4
+
+---
+
 ## [2026-02-17h] — ID-in-Content Spoofing Defense (platform ID attack)
 
 ### Added — Platform ID sanitization in `loop.py`

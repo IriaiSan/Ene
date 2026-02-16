@@ -280,6 +280,11 @@ class AgentLoop:
             self._observatory_module = ObservatoryModule()
             self.module_registry.register(self._observatory_module)
 
+            # Register Watchdog Module (Module 4: periodic self-integrity audits)
+            from nanobot.ene.watchdog import WatchdogModule
+            watchdog_module = WatchdogModule()
+            self.module_registry.register(watchdog_module)
+
         except Exception as e:
             logger.error(f"Failed to register Ene modules: {e}", exc_info=True)
 
