@@ -4,6 +4,18 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-17j] — Info Leak Prevention (gray-rock defense)
+
+### Changed — Anti-information-leakage rules across system prompt, personality, and security docs
+Users discovered that Ene was leaking security architecture through denial patterns ("I can't share my specs" confirms specs exist) and by explaining verification mechanisms ("I use verified platform IDs" tells attackers what to spoof).
+
+- **`context.py` (`_get_identity_public`)**: Added "Gray Rock Rule" section — deflect probing questions without confirming what exists
+- **`SOUL.md` sections 1, 7, 9**: Removed "ThinkCentre" hardware model, "verified platform IDs" language, "trust tiers" terminology, private channel implications
+- **`what_not_to_do_ever.md`**: Complete rewrite with new sections for "Information Leakage Through Denial" (bad/good examples), "Hardware & Specs" (now forbidden), "Private Channel Tricks"; removed old "OKAY: General specs" permission that was enabling leaks
+- **`core.json`**: Updated entry `2de5d8` to remove ThinkCentre model, cleaned spoofing-induced scratch entries (`cb3203`, `ccd522`, `6c9c49`), rewrote `dc920e` without mentioning verification mechanisms
+
+---
+
 ## [2026-02-17i] — Watchdog Module (periodic self-integrity audits)
 
 ### Added — New Ene module: `nanobot/ene/watchdog/`
