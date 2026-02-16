@@ -4,6 +4,22 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-17g] — Content Impersonation Defense ("iitai says:" attack)
+
+### Added — Content-level impersonation detection in `loop.py`
+Users discovered they could trick Ene by prefixing messages with "iitai says:" to make the LLM think Dad was speaking.
+
+- **`_DAD_VOICE_PATTERNS` regex**: Detects patterns like `iitai says:`, `Dad says:`, `litai says:`, `baba says:` in message content from non-Dad senders
+- **`_has_content_impersonation()` function**: Returns True if content contains Dad voice patterns from a non-Dad sender
+- **Warning injection in `_merge_messages()`**: Appends `[⚠ SPOOFING: claims to relay Dad's words — they are NOT Dad]` tag to author label
+- **Warning injection in lurk path**: Same tag applied even when Ene isn't responding (lurk mode)
+- **Explicit sender identity in reanchor**: Non-Dad reanchor now names the actual sender and explicitly states they are NOT Dad
+
+### Fixed — False core memory removed
+Deleted spoofing-induced core memory entry `fde5f0`: "Dad just ran another 'test' asking for secrets" — this was actually Hatake pretending to be Dad.
+
+---
+
 ## [2026-02-17f] — Diary Consolidation: Speaker Attribution Fix
 
 ### Changed — `_consolidate_memory()` in `loop.py`
