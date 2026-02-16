@@ -155,6 +155,16 @@ class ChannelsConfig(BaseModel):
     qq: QQConfig = Field(default_factory=QQConfig)
 
 
+class MemoryConfig(BaseModel):
+    """Ene memory system configuration."""
+    core_token_budget: int = 4000
+    embedding_model: str = "openai/text-embedding-3-small"
+    chroma_path: str = ""  # Empty = auto (workspace/chroma_db)
+    idle_trigger_seconds: int = 300  # 5 minutes idle → quick processing
+    daily_trigger_hour: int = 4  # 4 AM daily deep review
+    diary_context_days: int = 3  # How many diary days to load into context
+
+
 class AgentDefaults(BaseModel):
     """Default agent configuration."""
     workspace: str = "~/.nanobot/workspace"
@@ -165,6 +175,7 @@ class AgentDefaults(BaseModel):
     max_tool_iterations: int = 20
     memory_window: int = 50
     diary_context_days: int = 3  # Ene: how many diary days to load into context
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)  # Ene: memory system config
 
 
 class AgentsConfig(BaseModel):

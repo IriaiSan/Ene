@@ -4,6 +4,44 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-16] — Memory System v2
+
+**Context:** Complete redesign of Ene's memory system. Replaced append-only MEMORY.md with structured, editable core memory + ChromaDB vector store + sleep-time background processing. Built on a modular plugin architecture for future subsystem modules (personality, goals, timeline, etc.).
+
+### Added — Module Architecture (`nanobot/ene/`)
+- **EneModule base class** — Abstract interface for all Ene subsystems (tools, context, lifecycle hooks)
+- **EneContext** — Shared context (workspace, provider, config, bus, sessions) passed to all modules
+- **ModuleRegistry** — Aggregates tools, context blocks, and broadcasts lifecycle events (message, idle, daily) to all modules with error isolation
+- **13 unit tests** for ModuleRegistry (`tests/ene/test_module_registry.py`)
+
+### Added — Memory Module (`nanobot/ene/memory/`)
+- **CoreMemory** (`core_memory.py`) — Structured JSON memory with 5 sections (identity, people, preferences, context, scratch), 4000 token budget via tiktoken, 6-char hex entry IDs for edit/delete
+- **VectorMemory** (`vector_memory.py`) — ChromaDB with 3 collections (memories, entities, reflections), three-factor retrieval scoring (similarity 50% + recency 25% + importance 25%), Ebbinghaus-inspired memory decay
+- **EneEmbeddings** (`embeddings.py`) — litellm.embedding() wrapper with automatic fallback to ChromaDB default embeddings
+- **SleepTimeAgent** (`sleep_agent.py`) — Background processor with dual triggers:
+  - Quick path (5 min idle): fact extraction, entity tracking, diary writing
+  - Deep path (daily 4 AM): reflection generation, contradiction detection, weak memory pruning, core budget review
+- **MemorySystem facade** (`system.py`) — Coordinates core memory, vector memory, diary, entity cache, and automatic migration from legacy MEMORY.md/CORE.md
+- **4 memory tools** (`tools.py`):
+  - `save_memory(memory, section, importance)` — Add to core memory
+  - `edit_memory(entry_id, new_content, new_section, importance)` — Edit by ID
+  - `delete_memory(entry_id, archive=True)` — Remove from core, optionally archive to vector
+  - `search_memory(query, memory_type, limit)` — Search long-term memory
+- **MemoryModule** (`__init__.py`) — Module entry point implementing EneModule interface
+- **135 unit tests** across 7 test files (`tests/ene/memory/`)
+
+### Modified
+- **`nanobot/agent/loop.py`** — Added ModuleRegistry integration: `_register_ene_modules()`, `_initialize_ene_modules()`, idle watcher background task, daily trigger background task, module lifecycle notifications on message/idle/daily/shutdown
+- **`nanobot/agent/context.py`** — Accepts ModuleRegistry for context injection. System prompt now includes structured core memory (with IDs and budget) + dynamic per-message retrieval (vector search + entity context). Updated memory instructions for new tools.
+- **`nanobot/config/schema.py`** — Added `MemoryConfig` class with `core_token_budget`, `embedding_model`, `chroma_path`, `idle_trigger_seconds`, `daily_trigger_hour`, `diary_context_days`. Added to `AgentDefaults`.
+- **`nanobot/cli/commands.py`** — Both `gateway` and `agent` commands now pass `config=config` to AgentLoop for module initialization.
+
+### Test Results
+- 203 tests passing (148 Ene module tests + 55 existing tests)
+- Zero regressions
+
+---
+
 ## [2026-02-16] — Fork & Foundation
 
 **Context:** Forked nanobot (HKUDS/nanobot v0.1.3.post7) to IriaiSan/Ene. Replaced pip install with editable local clone at `C:\Users\Ene\Ene\`. Set up upstream tracking for selective updates.

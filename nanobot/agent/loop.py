@@ -1,6 +1,7 @@
 """Agent loop: the core processing engine."""
 
 import asyncio
+import time as _time
 from contextlib import AsyncExitStack
 import json
 import json_repair
@@ -21,10 +22,10 @@ from nanobot.agent.tools.web import WebSearchTool, WebFetchTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.cron import CronTool
-from nanobot.agent.tools.save_memory import SaveMemoryTool
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.subagent import SubagentManager
 from nanobot.session.manager import Session, SessionManager
+from nanobot.ene import EneContext, ModuleRegistry
 
 
 # === Ene: Hardcoded identity and security ===
@@ -62,6 +63,7 @@ class AgentLoop:
         mcp_servers: dict | None = None,
         consolidation_model: str | None = None,
         diary_context_days: int = 3,
+        config: Any = None,  # Ene: full Config object for module initialization
     ):
         from nanobot.config.schema import ExecToolConfig
         from nanobot.cron.service import CronService
@@ -78,12 +80,13 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+        self._config = config
 
         self.memory = MemoryStore(workspace, diary_context_days=diary_context_days)
         if self.memory.migrate_legacy():
             logger.info("Migrated legacy memory files (MEMORY.md/HISTORY.md) to new architecture")
 
-        self.context = ContextBuilder(workspace)
+        self.context = ContextBuilder(workspace, module_registry=self.module_registry)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -97,13 +100,19 @@ class AgentLoop:
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
         )
-        
+
         self._running = False
         self._current_caller_id = ""  # Ene: tracks who triggered current processing
         self._mcp_servers = mcp_servers or {}
         self._mcp_stack: AsyncExitStack | None = None
         self._mcp_connected = False
+        self._last_message_time = 0.0  # Ene: for idle tracking
+        self._idle_watcher_task: asyncio.Task | None = None
+
+        # Ene: Module registry (memory, personality, goals, etc.)
+        self.module_registry = ModuleRegistry()
         self._register_default_tools()
+        self._register_ene_modules()
     
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -137,9 +146,104 @@ class AgentLoop:
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
 
-        # Ene: core memory tool (available to all — it's Ene writing, not the user)
-        self.tools.register(SaveMemoryTool(memory=self.memory))
+        # Note: Memory tools (save, edit, delete, search) are now registered
+        # via the ModuleRegistry in _register_ene_modules()
     
+    def _register_ene_modules(self) -> None:
+        """Register Ene subsystem modules (memory, personality, etc.).
+
+        Modules are created and registered here but initialized lazily
+        in run() since initialization is async (needs provider, workspace, etc.).
+        """
+        try:
+            from nanobot.ene.memory import MemoryModule
+
+            cfg = self._config
+            if cfg:
+                mem_cfg = cfg.agents.defaults.memory
+                mem_module = MemoryModule(
+                    token_budget=mem_cfg.core_token_budget,
+                    chroma_path=mem_cfg.chroma_path or None,
+                    embedding_model=mem_cfg.embedding_model,
+                    idle_trigger_seconds=mem_cfg.idle_trigger_seconds,
+                    diary_context_days=mem_cfg.diary_context_days,
+                )
+            else:
+                mem_module = MemoryModule()
+
+            self.module_registry.register(mem_module)
+        except Exception as e:
+            logger.error(f"Failed to register Ene modules: {e}", exc_info=True)
+
+    async def _initialize_ene_modules(self) -> None:
+        """Initialize all registered Ene modules (async).
+
+        Called once from run() before the main loop starts.
+        Creates the EneContext and calls initialize_all().
+        """
+        if not self.module_registry.modules:
+            return
+
+        ctx = EneContext(
+            workspace=self.workspace,
+            provider=self.provider,
+            config=self._config,
+            bus=self.bus,
+            sessions=self.sessions,
+        )
+        await self.module_registry.initialize_all(ctx)
+
+        # Register module tools with the ToolRegistry
+        for tool in self.module_registry.get_all_tools():
+            # Replace old tool if it has the same name (e.g., save_memory)
+            if self.tools.has(tool.name):
+                self.tools.unregister(tool.name)
+            self.tools.register(tool)
+            logger.debug(f"Registered module tool: {tool.name}")
+
+    async def _idle_watcher(self) -> None:
+        """Background task that checks for idle and broadcasts to modules."""
+        while self._running:
+            try:
+                await asyncio.sleep(60)  # Check every 60 seconds
+                if self._last_message_time > 0:
+                    idle = _time.time() - self._last_message_time
+                    await self.module_registry.notify_idle(idle)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Idle watcher error: {e}")
+
+    async def _daily_trigger(self) -> None:
+        """Background task that triggers daily module maintenance at configured hour."""
+        import datetime
+        daily_hour = 4  # Default 4 AM
+        if self._config:
+            daily_hour = getattr(
+                self._config.agents.defaults.memory, "daily_trigger_hour", 4
+            )
+
+        while self._running:
+            try:
+                now = datetime.datetime.now()
+                # Calculate seconds until next trigger hour
+                target = now.replace(hour=daily_hour, minute=0, second=0, microsecond=0)
+                if now >= target:
+                    target += datetime.timedelta(days=1)
+                wait_seconds = (target - now).total_seconds()
+
+                logger.debug(f"Daily trigger: next run at {target.isoformat()}")
+                await asyncio.sleep(wait_seconds)
+
+                if self._running:
+                    logger.info("Running daily module maintenance")
+                    await self.module_registry.notify_daily()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Daily trigger error: {e}")
+                await asyncio.sleep(3600)  # Retry in 1 hour on error
+
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
         if self._mcp_connected or not self._mcp_servers:
@@ -232,6 +336,14 @@ class AgentLoop:
         """Run the agent loop, processing messages from the bus."""
         self._running = True
         await self._connect_mcp()
+
+        # Initialize Ene modules (memory, personality, etc.)
+        await self._initialize_ene_modules()
+
+        # Start background tasks for idle watching and daily triggers
+        self._idle_watcher_task = asyncio.create_task(self._idle_watcher())
+        self._daily_trigger_task = asyncio.create_task(self._daily_trigger())
+
         logger.info("Agent loop started")
 
         while self._running:
@@ -259,7 +371,11 @@ class AgentLoop:
                 continue
     
     async def close_mcp(self) -> None:
-        """Close MCP connections."""
+        """Close MCP connections and shutdown Ene modules."""
+        # Shutdown Ene modules
+        if self.module_registry.modules:
+            await self.module_registry.shutdown_all()
+
         if self._mcp_stack:
             try:
                 await self._mcp_stack.aclose()
@@ -270,6 +386,13 @@ class AgentLoop:
     def stop(self) -> None:
         """Stop the agent loop."""
         self._running = False
+
+        # Cancel background tasks
+        if self._idle_watcher_task and not self._idle_watcher_task.done():
+            self._idle_watcher_task.cancel()
+        if hasattr(self, "_daily_trigger_task") and self._daily_trigger_task and not self._daily_trigger_task.done():
+            self._daily_trigger_task.cancel()
+
         logger.info("Agent loop stopping")
     
     def _ene_clean_response(self, content: str, msg: InboundMessage) -> str | None:
@@ -361,6 +484,7 @@ class AgentLoop:
 
         # Ene: track who's talking for tool permission checks
         self._current_caller_id = f"{msg.channel}:{msg.sender_id}"
+        self._last_message_time = _time.time()  # Ene: update for idle tracking
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
@@ -378,6 +502,8 @@ class AgentLoop:
                 session_key=key, role="user", content=msg.content, author_name=author,
             )
             logger.debug(f"Lurking on message from {msg.sender_id} in {key}")
+            # Ene: notify modules even for lurked messages
+            asyncio.create_task(self.module_registry.notify_message(msg, responded=False))
             return None
         
         # Handle slash commands
@@ -432,6 +558,9 @@ class AgentLoop:
             session_key=key, role="assistant", content=final_content,
             tools_used=tools_used if tools_used else None,
         )
+
+        # Ene: notify modules that a message was processed
+        asyncio.create_task(self.module_registry.notify_message(msg, responded=True))
 
         # Ene: clean response (strip leaks, enforce length, etc.)
         cleaned = self._ene_clean_response(final_content, msg)

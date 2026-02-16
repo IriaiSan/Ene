@@ -45,16 +45,27 @@ These tools are available to the LLM during conversations. Restricted tools are 
 | `web_search` | Everyone | Search the web (requires Brave API key) |
 | `web_fetch` | Everyone | Fetch and read web pages |
 | `message` | Everyone | Send messages to chat channels |
+| `save_memory` | Everyone | Save to core memory (section + importance) |
+| `edit_memory` | Everyone | Edit core memory entry by ID |
+| `delete_memory` | Everyone | Delete from core (optional archive to vector store) |
+| `search_memory` | Everyone | Search long-term vector memory |
 
-## Memory
+## Memory (v2)
 
-| Feature | Details |
-|---|---|
-| Long-term memory | `MEMORY.md` — loaded into every prompt. Contains identity, people notes, rules. |
-| Event history | `HISTORY.md` — append-only log, grep-searchable for past events. |
-| Session history | Per-channel JSONL files. Preserves full conversation context. |
-| Consolidation | Automatic when session exceeds 50 messages. LLM summarizes old messages. |
-| Consolidation recovery | Retries 2x on failure, dropping 10 oldest messages each attempt. |
+See `docs/MEMORY.md` for full architecture reference.
+
+| Feature | Status | Details |
+|---|---|---|
+| Core memory | Working | Structured JSON with 5 sections, 4000 token budget, editable via tools |
+| Vector search | Working | ChromaDB with three-factor scoring (similarity + recency + importance) |
+| Entity tracking | Working | Automatic entity recognition and context injection |
+| Diary | Working | Daily entries from consolidation + sleep agent |
+| Sleep agent (idle) | Working | Fact extraction + entity updates after 5 min idle |
+| Sleep agent (daily) | Working | Reflections, pruning, contradiction detection at 4 AM |
+| Memory decay | Working | Ebbinghaus-inspired forgetting curve for weak memories |
+| Migration | Working | Auto-migrates from legacy MEMORY.md/CORE.md on first run |
+| Session history | Working | Per-channel JSONL files. Full conversation context. |
+| Consolidation | Working | Diary entry writing when session exceeds 50 messages. |
 
 ## Identity & Security
 

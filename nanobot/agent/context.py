@@ -4,26 +4,30 @@ import base64
 import mimetypes
 import platform
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
+
+if TYPE_CHECKING:
+    from nanobot.ene import ModuleRegistry
 
 
 class ContextBuilder:
     """
     Builds the context (system prompt + messages) for the agent.
-    
+
     Assembles bootstrap files, memory, skills, and conversation history
     into a coherent prompt for the LLM.
     """
-    
+
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
-    
-    def __init__(self, workspace: Path):
+
+    def __init__(self, workspace: Path, module_registry: "ModuleRegistry | None" = None):
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
+        self._module_registry = module_registry
     
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
         """
@@ -45,10 +49,16 @@ class ContextBuilder:
         if bootstrap:
             parts.append(bootstrap)
         
-        # Memory context
-        memory = self.memory.get_memory_context()
-        if memory:
-            parts.append(f"# Memory\n\n{memory}")
+        # Ene module context blocks (core memory, diary, etc.)
+        if self._module_registry:
+            module_context = self._module_registry.get_all_context_blocks()
+            if module_context:
+                parts.append(f"# Memory\n\n{module_context}")
+        else:
+            # Fallback: legacy memory context (no modules registered)
+            memory = self.memory.get_memory_context()
+            if memory:
+                parts.append(f"# Memory\n\n{memory}")
         
         # Skills - progressive loading
         # 1. Always-loaded skills: include full content
@@ -109,10 +119,28 @@ For normal conversation, just respond with text - do not call the message tool.
 Always be helpful, accurate, and concise. When using tools, think step by step: what you know, what you need, and why you chose this tool.
 
 ## Memory
-- Use the save_memory tool to record important things you want to remember forever.
-- Your recent diary entries are loaded automatically (you wrote these).
-- To recall details about a specific past day, use read_file on the interaction logs.
-- You are one person across all channels. Your core memory and diary are shared."""
+You have a structured memory system with conscious (tools) and subconscious (automatic) parts.
+
+### Conscious Memory (your tools)
+- **save_memory(memory, section, importance)** — Save to core memory (always in your context). Sections: identity, people, preferences, context, scratch.
+- **edit_memory(entry_id, new_content, new_section, importance)** — Edit a core memory entry by its [id:xxx].
+- **delete_memory(entry_id, archive)** — Delete from core (default: archives to long-term memory).
+- **search_memory(query, memory_type, limit)** — Search long-term memory for facts, archived entries, reflections.
+
+### Core Memory
+- Always visible in your context. Has a token budget — curate what stays.
+- Each entry has an [id:xxx] tag for editing/deleting.
+- Sections help organize: identity (who you are), people (who you know), preferences (your rules), context (current situation), scratch (temporary notes).
+
+### Subconscious (automatic)
+- After idle time: facts are extracted, entities tracked, diary updated.
+- Daily: reflections generated, contradictions resolved, weak memories pruned.
+- You don't need to manage this — it happens in the background.
+
+### Diary & Logs
+- Recent diary entries are loaded automatically.
+- Interaction logs: {workspace_path}/memory/logs/YYYY-MM-DD/ (read on demand).
+- You are one person across all channels. Your memory is shared."""
     
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
@@ -153,6 +181,13 @@ Always be helpful, accurate, and concise. When using tools, think step by step: 
 
         # System prompt
         system_prompt = self.build_system_prompt(skill_names)
+
+        # Ene: inject dynamic per-message context (retrieved memories, entities)
+        if self._module_registry and current_message:
+            dynamic_context = self._module_registry.get_all_dynamic_context(current_message)
+            if dynamic_context:
+                system_prompt += f"\n\n{dynamic_context}"
+
         if channel and chat_id:
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})

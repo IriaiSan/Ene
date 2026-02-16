@@ -17,10 +17,20 @@ C:\Users\Ene\
 │   │   ├── agent\
 │   │   │   ├── loop.py           # Core message processing (Ene mods here)
 │   │   │   ├── context.py        # System prompt builder
-│   │   │   ├── memory.py         # MEMORY.md / HISTORY.md persistence
+│   │   │   ├── memory.py         # Legacy MEMORY.md / HISTORY.md persistence
 │   │   │   ├── skills.py         # Skill loading system
 │   │   │   ├── subagent.py       # Background task agents
 │   │   │   └── tools\            # Tool implementations
+│   │   ├── ene\                  # Ene subsystem modules
+│   │   │   ├── __init__.py       # EneModule base, EneContext, ModuleRegistry
+│   │   │   └── memory\           # Module 1: Memory system
+│   │   │       ├── __init__.py   # MemoryModule entry point
+│   │   │       ├── core_memory.py    # Editable core memory (JSON, token-budgeted)
+│   │   │       ├── vector_memory.py  # ChromaDB vector store (3 collections)
+│   │   │       ├── embeddings.py     # Embedding provider (litellm + fallback)
+│   │   │       ├── sleep_agent.py    # Background processor (idle + daily)
+│   │   │       ├── system.py         # MemorySystem facade
+│   │   │       └── tools.py          # 4 memory tools
 │   │   ├── channels\
 │   │   │   ├── base.py           # Base channel interface
 │   │   │   └── discord.py        # Discord gateway + REST (Ene mods here)
@@ -29,6 +39,10 @@ C:\Users\Ene\
 │   │   ├── providers\            # LLM provider abstraction (LiteLLM)
 │   │   ├── config\               # Configuration schema
 │   │   └── cron\                 # Scheduled tasks
+│   ├── tests\
+│   │   └── ene\                  # Ene module tests
+│   │       ├── test_module_registry.py
+│   │       └── memory\           # Memory module tests (148 tests)
 │   └── docs\                     # Ene documentation (you are here)
 │
 └── .nanobot\                     # Runtime data (not in git)
@@ -37,9 +51,10 @@ C:\Users\Ene\
     │   ├── SOUL.md               # Personality definition
     │   ├── AGENTS.md             # Agent instructions
     │   ├── memory\
-    │   │   ├── MEMORY.md         # Long-term facts (loaded every prompt)
-    │   │   └── HISTORY.md        # Event log (grep-searchable)
-    │   └── people\               # Per-user profile files (planned)
+    │   │   ├── core.json         # Core memory (structured, token-budgeted)
+    │   │   ├── diary\            # Daily diary entries (YYYY-MM-DD.md)
+    │   │   └── logs\             # Interaction logs per channel
+    │   └── chroma_db\            # ChromaDB vector store (long-term memory)
     └── sessions\                 # Conversation JSONL files per channel
 ```
 
@@ -118,23 +133,46 @@ Key settings:
 - `channels.telegram.allowFrom`: `["8559611823"]` (Dad only)
 - `providers.openrouter.apiKey`: OpenRouter API key
 
-## Memory System
+## Module Architecture
 
-### MEMORY.md (Long-term)
-- Loaded into every system prompt
-- Contains: identity, people notes, rules, known limitations
-- Updated during consolidation
+Ene subsystems (memory, personality, goals, etc.) are modular plugins under `nanobot/ene/`. Each implements `EneModule` and registers with `ModuleRegistry`. The registry auto-aggregates tools, context blocks, and lifecycle hooks.
 
-### HISTORY.md (Event Log)
-- Append-only, grep-searchable
-- Each entry: `[YYYY-MM-DD HH:MM] Summary paragraph`
-- Used for recalling past events
+Adding a new module:
+1. Create folder in `nanobot/ene/`
+2. Implement `EneModule` interface
+3. Register in `AgentLoop._register_ene_modules()`
 
-### Consolidation
+## Memory System (v2)
+
+See `docs/MEMORY.md` for full reference.
+
+### Core Memory (`core.json`)
+- Structured JSON with 5 sections (identity, people, preferences, context, scratch)
+- 4000 token budget enforced by tiktoken
+- Each entry has a 6-char hex ID for edit/delete
+- Always in system prompt — Ene curates what stays
+
+### Long-term Memory (ChromaDB)
+- Three collections: memories, entities, reflections
+- Three-factor retrieval scoring: similarity (50%) + recency (25%) + importance (25%)
+- Ebbinghaus-inspired decay for memory strength
+- Entity name cache for automatic context injection
+
+### Sleep Agent (Background)
+- Quick path (5 min idle): fact extraction, entity tracking, diary writing
+- Deep path (daily 4 AM): reflections, contradiction detection, pruning, core budget review
+
+### Memory Tools
+- `save_memory` — Add to core memory (section + importance)
+- `edit_memory` — Edit core entry by ID
+- `delete_memory` — Remove from core (optional archive to vector store)
+- `search_memory` — Search long-term vector memory
+
+### Legacy Consolidation
+- Still active for diary entry writing from session messages
 - Triggers when session messages exceed `memory_window` (50)
-- LLM summarizes old messages into history entry + memory update
-- On JSON parse failure: retries twice, dropping 10 oldest messages each time
-- On total failure: force-advances pointer to prevent infinite retries
+- LLM summarizes old messages into diary entry
+- On failure: retries twice, dropping 10 oldest messages each time
 
 ## Session Management
 
