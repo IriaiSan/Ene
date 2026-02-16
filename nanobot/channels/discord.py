@@ -197,30 +197,24 @@ class DiscordChannel(BaseChannel):
         if not self.is_allowed(sender_id):
             return
 
+        # Ene: capture display name for context
+        display_name = (payload.get("member") or {}).get("nick") or author.get("global_name") or author.get("username") or sender_id
+
         content_parts = [content] if content else []
         media_paths: list[str] = []
-        media_dir = Path.home() / ".nanobot" / "media"
 
+        # Ene: handle attachments — images become text descriptions since DeepSeek has no vision
         for attachment in payload.get("attachments") or []:
-            url = attachment.get("url")
             filename = attachment.get("filename") or "attachment"
-            size = attachment.get("size") or 0
-            if not url or not self._http:
-                continue
-            if size and size > MAX_ATTACHMENT_BYTES:
-                content_parts.append(f"[attachment: {filename} - too large]")
-                continue
-            try:
-                media_dir.mkdir(parents=True, exist_ok=True)
-                file_path = media_dir / f"{attachment.get('id', 'file')}_{filename.replace('/', '_')}"
-                resp = await self._http.get(url)
-                resp.raise_for_status()
-                file_path.write_bytes(resp.content)
-                media_paths.append(str(file_path))
-                content_parts.append(f"[attachment: {file_path}]")
-            except Exception as e:
-                logger.warning(f"Failed to download Discord attachment: {e}")
-                content_parts.append(f"[attachment: {filename} - download failed]")
+            content_type = attachment.get("content_type") or ""
+
+            if content_type.startswith("image/"):
+                # Don't download images — model can't see them
+                content_parts.append(f"[{display_name} sent an image: {filename}]")
+                logger.debug(f"Skipped image attachment from {display_name}: {filename}")
+            else:
+                # Non-image attachments: note them but don't download
+                content_parts.append(f"[{display_name} sent a file: {filename}]")
 
         reply_to = (payload.get("referenced_message") or {}).get("id")
 
@@ -235,6 +229,7 @@ class DiscordChannel(BaseChannel):
                 "message_id": str(payload.get("id", "")),
                 "guild_id": payload.get("guild_id"),
                 "reply_to": reply_to,
+                "author_name": display_name,
             },
         )
 

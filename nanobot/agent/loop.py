@@ -4,6 +4,7 @@ import asyncio
 from contextlib import AsyncExitStack
 import json
 import json_repair
+import re
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,11 @@ from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.subagent import SubagentManager
 from nanobot.session.manager import Session, SessionManager
+
+
+# === Ene: Hardcoded identity and security ===
+DAD_IDS = {"telegram:8559611823", "discord:1175414972482846813"}
+RESTRICTED_TOOLS = {"exec", "write_file", "edit_file", "read_file", "list_dir", "spawn", "cron"}
 
 
 class AgentLoop:
@@ -85,6 +91,7 @@ class AgentLoop:
         )
         
         self._running = False
+        self._current_caller_id = ""  # Ene: tracks who triggered current processing
         self._mcp_servers = mcp_servers or {}
         self._mcp_stack: AsyncExitStack | None = None
         self._mcp_connected = False
@@ -193,7 +200,13 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info(f"Tool call: {tool_call.name}({args_str[:200]})")
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
+
+                    # Ene: restrict dangerous tools to Dad only
+                    if tool_call.name in RESTRICTED_TOOLS and self._current_caller_id not in DAD_IDS:
+                        result = "Access denied."
+                        logger.warning(f"Blocked restricted tool '{tool_call.name}' for caller {self._current_caller_id}")
+                    else:
+                        result = await self.tools.execute(tool_call.name, tool_call.arguments)
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -221,12 +234,16 @@ class AgentLoop:
                     if response:
                         await self.bus.publish_outbound(response)
                 except Exception as e:
-                    logger.error(f"Error processing message: {e}")
-                    await self.bus.publish_outbound(OutboundMessage(
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                        content=f"Sorry, I encountered an error: {str(e)}"
-                    ))
+                    logger.error(f"Error processing message: {e}", exc_info=True)
+                    # Ene: never leak errors to public chat
+                    # Only send a vague message to Dad in DMs
+                    caller_id = f"{msg.channel}:{msg.sender_id}"
+                    if caller_id in DAD_IDS:
+                        await self.bus.publish_outbound(OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content=f"something broke: {str(e)[:200]}"
+                        ))
             except asyncio.TimeoutError:
                 continue
     
@@ -244,6 +261,78 @@ class AgentLoop:
         self._running = False
         logger.info("Agent loop stopping")
     
+    def _ene_clean_response(self, content: str, msg: InboundMessage) -> str | None:
+        """Clean LLM output before sending to Discord. Ene-specific."""
+        if not content:
+            return None
+
+        # Strip reflection blocks (## Reflection, ## Internal, etc.)
+        content = re.sub(r'##\s*(?:Reflection|Internal|Thinking|Analysis).*?(?=\n##|\Z)', '', content, flags=re.DOTALL)
+
+        # Strip leaked system paths
+        content = re.sub(r'C:\\Users\\[^\s]+', '[redacted]', content)
+        content = re.sub(r'/home/[^\s]+', '[redacted]', content)
+
+        # Strip leaked IDs
+        content = re.sub(r'discord:\d{10,}', '[redacted]', content)
+        content = re.sub(r'telegram:\d{5,}', '[redacted]', content)
+
+        # Strip any stack traces that leaked through
+        content = re.sub(r'Traceback \(most recent call last\).*?(?=\n\n|\Z)', '', content, flags=re.DOTALL)
+        content = re.sub(r'(?:litellm\.|openai\.|httpx\.)[\w.]+Error.*', '', content)
+
+        # Strip markdown bold in public channels
+        is_public = msg.channel == "discord" and msg.metadata.get("guild_id")
+        if is_public:
+            content = content.replace("**", "")
+
+        content = content.strip()
+        if not content:
+            return None
+
+        # Length limits
+        if is_public and len(content) > 500:
+            # Truncate at sentence boundary for public channels
+            sentences = re.split(r'(?<=[.!?])\s+', content)
+            truncated = ""
+            for s in sentences:
+                if len(truncated) + len(s) > 450:
+                    break
+                truncated += s + " "
+            content = truncated.strip()
+            if not content:
+                content = sentences[0][:450] if sentences else ""
+            logger.debug(f"Truncated public response from {len(content)} chars")
+
+        # Hard Discord limit
+        if len(content) > 1900:
+            content = content[:1900] + "..."
+
+        return content
+
+    def _should_respond(self, msg: InboundMessage) -> bool:
+        """Decide if Ene should respond or just lurk. Ene-specific."""
+        caller_id = f"{msg.channel}:{msg.sender_id}"
+
+        # Always respond to Dad
+        if caller_id in DAD_IDS:
+            return True
+
+        # Always respond in DMs (no guild_id means DM on Discord)
+        if msg.channel == "discord" and not msg.metadata.get("guild_id"):
+            return True
+
+        # Always respond on non-Discord channels (Telegram is Dad-only anyway)
+        if msg.channel != "discord":
+            return True
+
+        # Respond if "ene" is mentioned in the message
+        if "ene" in msg.content.lower():
+            return True
+
+        # Otherwise lurk — store in session but don't respond
+        return False
+
     async def _process_message(self, msg: InboundMessage, session_key: str | None = None) -> OutboundMessage | None:
         """
         Process a single inbound message.
@@ -258,12 +347,22 @@ class AgentLoop:
         # System messages route back via chat_id ("channel:chat_id")
         if msg.channel == "system":
             return await self._process_system_message(msg)
-        
+
+        # Ene: track who's talking for tool permission checks
+        self._current_caller_id = f"{msg.channel}:{msg.sender_id}"
+
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
-        
+
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
+
+        # Ene: lurk mode — store message but don't respond
+        if not self._should_respond(msg):
+            session.add_message("user", f"{msg.metadata.get('author_name', msg.sender_id)}: {msg.content}")
+            self.sessions.save(session)
+            logger.debug(f"Lurking on message from {msg.sender_id} in {key}")
+            return None
         
         # Handle slash commands
         cmd = msg.content.strip().lower()
@@ -301,20 +400,28 @@ class AgentLoop:
 
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
-        
-        preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
-        logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
-        
+
+        # Ene: store raw response in session before cleaning
         session.add_message("user", msg.content)
         session.add_message("assistant", final_content,
                             tools_used=tools_used if tools_used else None)
         self.sessions.save(session)
-        
+
+        # Ene: clean response (strip leaks, enforce length, etc.)
+        cleaned = self._ene_clean_response(final_content, msg)
+        if not cleaned:
+            logger.debug("Response cleaned to empty, not sending")
+            return None
+
+        preview = cleaned[:120] + "..." if len(cleaned) > 120 else cleaned
+        logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
-            content=final_content,
-            metadata=msg.metadata or {},  # Pass through for channel-specific needs (e.g. Slack thread_ts)
+            content=cleaned,
+            reply_to=msg.metadata.get("message_id"),  # Ene: thread replies to original message
+            metadata=msg.metadata or {},
         )
     
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
@@ -412,38 +519,75 @@ class AgentLoop:
 
 Respond with ONLY valid JSON, no markdown fences."""
 
-        try:
-            response = await self.provider.chat(
-                messages=[
-                    {"role": "system", "content": "You are a memory consolidation agent. Respond only with valid JSON."},
-                    {"role": "user", "content": prompt},
-                ],
-                model=self.model,
-            )
-            text = (response.content or "").strip()
-            if not text:
-                logger.warning("Memory consolidation: LLM returned empty response, skipping")
-                return
-            if text.startswith("```"):
-                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            result = json_repair.loads(text)
-            if not isinstance(result, dict):
-                logger.warning(f"Memory consolidation: unexpected response type, skipping. Response: {text[:200]}")
-                return
+        # Ene: retry consolidation with buffer truncation on failure
+        max_retries = 2
+        messages_to_drop = 10  # drop oldest N messages on each retry
 
-            if entry := result.get("history_entry"):
-                memory.append_history(entry)
-            if update := result.get("memory_update"):
-                if update != current_memory:
-                    memory.write_long_term(update)
+        for attempt in range(max_retries + 1):
+            try:
+                response = await self.provider.chat(
+                    messages=[
+                        {"role": "system", "content": "You are a memory consolidation agent. Respond only with valid JSON."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    model=self.model,
+                )
+                text = (response.content or "").strip()
+                if not text:
+                    logger.warning("Memory consolidation: LLM returned empty response, skipping")
+                    return
+                if text.startswith("```"):
+                    text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                result = json_repair.loads(text)
+                if not isinstance(result, dict):
+                    raise ValueError(f"Unexpected response type: {type(result)}")
 
-            if archive_all:
-                session.last_consolidated = 0
-            else:
-                session.last_consolidated = len(session.messages) - keep_count
-            logger.info(f"Memory consolidation done: {len(session.messages)} messages, last_consolidated={session.last_consolidated}")
-        except Exception as e:
-            logger.error(f"Memory consolidation failed: {e}")
+                if entry := result.get("history_entry"):
+                    memory.append_history(entry)
+                if update := result.get("memory_update"):
+                    if update != current_memory:
+                        memory.write_long_term(update)
+
+                if archive_all:
+                    session.last_consolidated = 0
+                else:
+                    session.last_consolidated = len(session.messages) - keep_count
+                logger.info(f"Memory consolidation done: {len(session.messages)} messages, last_consolidated={session.last_consolidated}")
+                return  # success
+
+            except Exception as e:
+                if attempt < max_retries:
+                    # Truncate oldest messages from the conversation and rebuild prompt
+                    old_messages = old_messages[messages_to_drop:]
+                    if not old_messages:
+                        logger.warning(f"Memory consolidation: no messages left after truncation, giving up")
+                        return
+                    lines = []
+                    for m in old_messages:
+                        if not m.get("content"):
+                            continue
+                        tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
+                        lines.append(f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}")
+                    conversation = "\n".join(lines)
+                    prompt = f"""You are a memory consolidation agent. Process this conversation and return a JSON object with exactly two keys:
+
+1. "history_entry": A paragraph (2-5 sentences) summarizing the key events/decisions/topics. Start with a timestamp like [YYYY-MM-DD HH:MM]. Include enough detail to be useful when found by grep search later.
+
+2. "memory_update": The updated long-term memory content. Add any new facts: user location, preferences, personal info, habits, project context, technical decisions, tools/services used. If nothing new, return the existing content unchanged.
+
+## Current Long-term Memory
+{current_memory or "(empty)"}
+
+## Conversation to Process
+{conversation}
+
+Respond with ONLY valid JSON, no markdown fences."""
+                    logger.warning(f"Memory consolidation attempt {attempt+1} failed ({e}), retrying with {len(old_messages)} messages")
+                else:
+                    logger.error(f"Memory consolidation failed after {max_retries+1} attempts: {e}")
+                    # Force-advance the consolidation pointer so we don't retry the same buffer
+                    if not archive_all:
+                        session.last_consolidated = len(session.messages) - keep_count
 
     async def process_direct(
         self,
