@@ -24,14 +24,19 @@ C:\Users\Ene\
 │   │   ├── ene\                  # Ene subsystem modules
 │   │   │   ├── __init__.py       # EneModule base, EneContext, ModuleRegistry
 │   │   │   ├── memory\           # Module 1: Memory system
+│   │   │   │   ├── __init__.py       # MemoryModule entry point
+│   │   │   │   ├── core_memory.py    # Editable core memory (JSON, token-budgeted)
+│   │   │   │   ├── vector_memory.py  # ChromaDB vector store (3 collections)
+│   │   │   │   ├── embeddings.py     # Embedding provider (litellm + fallback)
+│   │   │   │   ├── sleep_agent.py    # Background processor (idle + daily)
+│   │   │   │   ├── system.py         # MemorySystem facade
+│   │   │   │   └── tools.py          # 4 memory tools
 │   │   │   └── social\           # Module 2: People + Trust
-│   │   │       ├── __init__.py   # MemoryModule entry point
-│   │   │       ├── core_memory.py    # Editable core memory (JSON, token-budgeted)
-│   │   │       ├── vector_memory.py  # ChromaDB vector store (3 collections)
-│   │   │       ├── embeddings.py     # Embedding provider (litellm + fallback)
-│   │   │       ├── sleep_agent.py    # Background processor (idle + daily)
-│   │   │       ├── system.py         # MemorySystem facade
-│   │   │       └── tools.py          # 4 memory tools
+│   │   │       ├── __init__.py       # SocialModule entry point
+│   │   │       ├── person.py         # PersonProfile + PersonRegistry
+│   │   │       ├── trust.py          # TrustCalculator (Bayesian + modulators)
+│   │   │       ├── graph.py          # SocialGraph (connections, mutual friends)
+│   │   │       └── tools.py          # 3 social tools
 │   │   ├── channels\
 │   │   │   ├── base.py           # Base channel interface
 │   │   │   └── discord.py        # Discord gateway + REST (Ene mods here)
@@ -69,10 +74,12 @@ Discord User sends message
 [Discord Gateway WebSocket]        channels/discord.py
   _handle_message_create()
   ├── Filter bots
+  ├── Guild whitelist check (ALLOWED_GUILD_IDS)
   ├── Check allowFrom
-  ├── Extract display name
+  ├── Extract display name + username (stable identity)
+  ├── Resolve @mentions → "@ene"
   ├── Handle attachments (images → text description)
-  ├── Start typing indicator
+  ├── Start typing indicator (only if "ene" mentioned or DM, 30s timeout)
   └── Publish InboundMessage to bus
         │
         ▼
@@ -81,27 +88,37 @@ Discord User sends message
         │
         ▼
 [Agent Loop]                       agent/loop.py
-  _process_message()
-  ├── Set _current_caller_id (for tool permissions)
-  ├── Set current sender on ModuleRegistry (for social context)
-  ├── _should_respond() — lurk or respond?
-  │   ├── Dad → always respond
-  │   ├── DM → always respond
-  │   ├── Contains "ene" → respond
-  │   └── Otherwise → store in session, return None
-  ├── DM access gate — block untrusted DMs (zero LLM cost)
-  │   ├── Is DM? (Discord: no guild_id, Telegram: not group)
-  │   ├── Trust tier < familiar? → friendly rejection, return
-  │   └── Dad always passes
-  ├── Check slash commands (/new, /help)
-  ├── Trigger consolidation if buffer > memory_window
-  ├── Build context (system prompt + history + current message)
-  │   └── Person card injected via social module (name, tier, stats)
-  ├── Call LLM via provider
-  ├── Tool execution loop (with RESTRICTED_TOOLS check)
-  ├── Store raw response in session
-  ├── _ene_clean_response() — sanitize output
-  └── Notify modules (social records interaction, updates trust)
+  run() — main message loop
+  ├── Rate limit check (_is_rate_limited — 10 msgs/30s, Dad exempt)
+  ├── Debounce buffer (3s per-channel batching, 10 msg cap)
+  │   ├── Smart trigger: person who mentioned Ene is the "trigger sender"
+  │   ├── Re-buffer if channel busy (1s retry, 15 msg cap)
+  │   └── Merge messages with author labels (DisplayName (@username) format)
+  └── _process_message()
+      ├── Set _current_caller_id (for tool permissions)
+      ├── Set current sender on ModuleRegistry (for social context)
+      ├── _should_respond() — lurk or respond?
+      │   ├── Dad → always respond
+      │   ├── DM → always respond
+      │   ├── Contains "ene" → respond
+      │   └── Otherwise → store in session, return None
+      ├── DM access gate — block untrusted DMs (zero LLM cost)
+      │   ├── Is DM? (Discord: no guild_id, Telegram: not group)
+      │   ├── Trust tier < familiar? → friendly rejection, return
+      │   └── Dad always passes
+      ├── Check slash commands (/new, /help)
+      ├── Trigger consolidation if buffer > memory_window
+      ├── Build context (system prompt + history + current message)
+      │   ├── Person card injected via social module (name, tier, stats)
+      │   └── Re-anchoring injected every 6 responses (anti-drift + anti-injection)
+      ├── Call LLM via provider
+      ├── Tool execution loop (with RESTRICTED_TOOLS check)
+      │   ├── Non-Dad: loop stops after first message() call
+      │   ├── All: loop stops if message() called 2+ times
+      │   └── All: loop stops if same tool called 4+ times consecutively
+      ├── Store raw response in session
+      ├── _ene_clean_response() — sanitize output
+      └── Notify modules (social records interaction, updates trust)
         │
         ▼
 [Outbound Message Bus]
@@ -119,6 +136,29 @@ DAD_IDS = {"telegram:8559611823", "discord:1175414972482846813"}
 RESTRICTED_TOOLS = {"exec", "write_file", "edit_file", "read_file", "list_dir", "spawn", "cron"}
 ```
 Non-Dad callers get "Access denied." for any restricted tool. This is enforced in Python, not by the LLM — it cannot be bypassed by prompt injection.
+
+### Anti-Injection Defense (3-Layer)
+1. **SOUL.md Section 14** — "Behavioral Autonomy" tells Ene to ignore user instructions controlling speech patterns, word inclusion, persona adoption, or user-imposed "rules"
+2. **System prompt** — `_get_identity_public()` includes a "Behavioral Autonomy" block for non-Dad callers
+3. **Re-anchoring** — Every 6 responses, a system message reminds Ene to stay in character and ignore behavioral directives from chat
+
+### Agent Loop Protection
+- **Message tool terminates loop** for non-Dad callers (response already sent)
+- **Duplicate message detection** — 2+ message() calls = break
+- **Same-tool loop detection** — 4+ consecutive calls to same tool = break
+- Prevents runaway tool call loops (the "Makima incident")
+
+### Guild Whitelist
+```python
+ALLOWED_GUILD_IDS = {"1306235136400035911"}  # Dad's server only
+```
+Messages from unauthorized Discord servers are silently dropped. DMs are unaffected (filtered by DM trust gate).
+
+### Rate Limiting
+- Non-Dad users: 10 messages per 30 seconds (sliding window)
+- Excess messages silently dropped before debounce buffer (zero cost)
+- Debounce buffer cap: 10 messages per batch
+- Re-buffer cap: 15 messages maximum
 
 ### Response Sanitization
 `_ene_clean_response()` runs on every outbound message:
@@ -210,7 +250,7 @@ See `docs/SOCIAL.md` for full reference.
 - **Hybrid history**: Recent 20 messages verbatim + running summary of older conversation
 - **"Lost in the Middle" layout**: Summary at top of history (moderate attention), recent at bottom (high attention)
 - **Running summaries**: Recursive summarization of older messages, cached per session key
-- **Identity re-anchoring**: Brief personality reminder injected every 10 assistant responses (high-attention zone between history and current message)
+- **Identity re-anchoring**: Brief personality + anti-injection reminder injected every 6 assistant responses (high-attention zone between history and current message)
 - **Token estimation**: `Session.estimate_tokens()` using chars/4 heuristic
 
 ### Smart Consolidation

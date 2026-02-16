@@ -183,6 +183,38 @@ Research conducted 2026-02-16 to inform context window, session management, and 
 - Would require running a small model locally (e.g., Phi-2)
 - Best ROI for reducing API costs on long conversations
 
+### Message Debouncing & Chat-Level Processing **[PLANNED]**
+- **Problem**: People send messages in bursts (7 lines = 7 separate messages). Ene responds to each one individually, missing context and wasting tokens.
+- **Also**: Multiple people talking to Ene get separate responses instead of one contextual reply.
+- **Solution**: Per-channel debounce window (2-3 seconds). Collect all incoming messages, batch them, process as one prompt.
+- **Format**: Group messages with author labels so Ene sees the full conversation chunk.
+
+### Sandbox Tools for Ene (Safe Autonomy)
+- **Problem**: Currently Ene's tools are blocked for everyone except Dad. But blocking is temporary — want to give her freedom to actually do things.
+- **Solution**: Sandboxed execution environments. Ene can create containers/sandboxes to experiment, code, create content — without risk to the host system.
+- **Examples**: Run code in a sandbox, create files in a temp space, browse the web safely.
+- **Ties into**: Phase 2 (ene_runtime) and Phase 3 (trust-gated tool access).
+
+### Impulse/Urge System (Subconscious Layer)
+- **Concept**: A small/free model that reads everything and decides if Ene should act. Operates on totally different instructions. The "cold calculating higher-level subconscious."
+- **How**: Small model (e.g., Phi-3, Qwen-2, or free-tier model) as a fast classifier:
+  - New message → should Ene respond, lurk, or react-only?
+  - Server been quiet → should Ene initiate something?
+  - Ene been idle → should she do something proactive?
+- **Key design**: Ene does NOT have access to or awareness of this layer. Just like human impulses — you can kinda explain why you did something, but the actual trigger mechanism is opaque.
+- **Meta-awareness**: How much can Ene realize about herself? Models already detect when they're being tested and adjust behavior. We can leverage this for naturalistic self-awareness without full transparency of the impulse layer.
+- **Ties into**: Phase 3 (Trust/Impulse/Mood system), Input Design System.
+
+### Discord Reactions, Emojis & GIF Collection
+- **Problem**: Ene can only send text. No reactions, no emojis in responses, no GIFs.
+- **Solution**:
+  - Add Discord reaction API support (add_reaction endpoint).
+  - Give Ene a GIF search tool (Tenor/GIPHY API).
+  - Let her curate her own collection of favorites over time.
+  - Hunt for Ene (anime character) GIFs specifically.
+  - Possibly create custom stickers/emojis.
+- **Ties into**: Phase 4 (Discord richness), Impulse system (react-only decisions).
+
 ---
 
 *Last updated: 2026-02-16*

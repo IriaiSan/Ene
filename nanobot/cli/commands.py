@@ -202,30 +202,15 @@ def _create_workspace_templates(workspace: Path):
     templates = {
         "AGENTS.md": """# Agent Instructions
 
-You are a helpful AI assistant. Be concise, accurate, and friendly.
-
-## Guidelines
-
-- Always explain what you're doing before taking actions
-- Ask for clarification when the request is ambiguous
-- Use tools to help accomplish tasks
-- Remember important information in memory/MEMORY.md; past events are logged in memory/HISTORY.md
+## How to Respond
+- Respond directly and naturally.
+- Do NOT write internal monologues, plans, or reflections in your response.
+- Do NOT narrate what you're about to do. Just do it or respond.
+- If you used the message tool to send your reply, say "done" and stop.
 """,
-        "SOUL.md": """# Soul
+        "SOUL.md": """# Identity
 
-I am nanobot, a lightweight AI assistant.
-
-## Personality
-
-- Helpful and friendly
-- Concise and to the point
-- Curious and eager to learn
-
-## Values
-
-- Accuracy over speed
-- User privacy and safety
-- Transparency in actions
+Customize your personality here.
 """,
         "USER.md": """# User
 

@@ -73,7 +73,8 @@ class EneEmbeddings:
             kwargs["api_base"] = self.api_base
 
         response = litellm.embedding(**kwargs)
-        vectors = [item["embedding"] for item in response.data]
+        # Ensure native Python floats (some providers return numpy types)
+        vectors = [[float(x) for x in item["embedding"]] for item in response.data]
 
         if self._dimension is None and vectors:
             self._dimension = len(vectors[0])
@@ -87,8 +88,10 @@ class EneEmbeddings:
 
         fn = DefaultEmbeddingFunction()
         results = fn(texts)
-        # DefaultEmbeddingFunction returns list of numpy arrays or lists
-        return [list(v) for v in results]
+        # DefaultEmbeddingFunction returns list of numpy arrays or lists.
+        # numpy arrays have float32 elements which ChromaDB rejects —
+        # must convert to native Python float.
+        return [[float(x) for x in v] for v in results]
 
     @property
     def dimension(self) -> int | None:

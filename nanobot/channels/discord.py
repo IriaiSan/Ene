@@ -18,6 +18,13 @@ from nanobot.config.schema import DiscordConfig
 DISCORD_API_BASE = "https://discord.com/api/v10"
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20MB
 
+# Ene: only respond in these guilds (servers). Empty = all guilds allowed.
+# If someone adds Ene to another server, she'll ignore all messages there.
+ALLOWED_GUILD_IDS: set[str] = {
+    "1306235136400035911",  # Dad's server
+}
+# DMs have guild_id=None, which we allow separately via the DM gate in loop.py
+
 
 class DiscordChannel(BaseChannel):
     """Discord channel using Gateway websocket."""
@@ -32,6 +39,7 @@ class DiscordChannel(BaseChannel):
         self._heartbeat_task: asyncio.Task | None = None
         self._typing_tasks: dict[str, asyncio.Task] = {}
         self._http: httpx.AsyncClient | None = None
+        self._bot_user_id: str | None = None  # Ene: own Discord user ID (for @mention detection)
 
     async def start(self) -> None:
         """Start the Discord gateway connection."""
@@ -127,14 +135,21 @@ class DiscordChannel(BaseChannel):
             if seq is not None:
                 self._seq = seq
 
+            # DEBUG: log all gateway events so we can see what Discord sends
+            if op == 0 and event_type not in ("READY", "GUILD_CREATE"):
+                logger.debug(f"Discord gateway event: op={op} t={event_type} seq={seq}")
+
             if op == 10:
                 # HELLO: start heartbeat and identify
                 interval_ms = payload.get("heartbeat_interval", 45000)
                 await self._start_heartbeat(interval_ms / 1000)
                 await self._identify()
             elif op == 0 and event_type == "READY":
-                logger.info("Discord gateway READY")
+                # Ene: capture own user ID for @mention detection
+                self._bot_user_id = payload.get("user", {}).get("id")
+                logger.info(f"Discord gateway READY (bot user ID: {self._bot_user_id})")
             elif op == 0 and event_type == "MESSAGE_CREATE":
+                logger.debug(f"Discord MESSAGE_CREATE from {payload.get('author', {}).get('username', '?')} in channel {payload.get('channel_id', '?')}")
                 await self._handle_message_create(payload)
             elif op == 7:
                 # RECONNECT: exit loop to reconnect
@@ -144,6 +159,16 @@ class DiscordChannel(BaseChannel):
                 # INVALID_SESSION: reconnect
                 logger.warning("Discord gateway invalid session")
                 break
+            elif op == 11:
+                # HEARTBEAT_ACK — normal, just track it
+                pass
+            elif op == 1:
+                # HEARTBEAT request from server
+                heartbeat = {"op": 1, "d": self._seq}
+                await self._ws.send(json.dumps(heartbeat))
+            else:
+                if op != 0:
+                    logger.debug(f"Discord gateway unknown op={op} t={event_type}")
 
     async def _identify(self) -> None:
         """Send IDENTIFY payload."""
@@ -162,6 +187,7 @@ class DiscordChannel(BaseChannel):
                 },
             },
         }
+        logger.info(f"Discord IDENTIFY sent with intents={self.config.intents} (binary: {bin(self.config.intents)})")
         await self._ws.send(json.dumps(identify))
 
     async def _start_heartbeat(self, interval_s: float) -> None:
@@ -185,20 +211,41 @@ class DiscordChannel(BaseChannel):
         """Handle incoming Discord messages."""
         author = payload.get("author") or {}
         if author.get("bot"):
+            logger.debug(f"Discord: ignoring bot message from {author.get('username', '?')}")
             return
 
         sender_id = str(author.get("id", ""))
         channel_id = str(payload.get("channel_id", ""))
         content = payload.get("content") or ""
+        guild_id = payload.get("guild_id")
+
+        logger.debug(f"Discord msg: sender={sender_id} channel={channel_id} guild={guild_id} content={content[:80]!r}")
 
         if not sender_id or not channel_id:
+            logger.debug("Discord: dropping — missing sender_id or channel_id")
+            return
+
+        # Ene: guild whitelist — ignore messages from unauthorized servers
+        # DMs have guild_id=None, which is allowed (filtered by DM gate in loop.py)
+        if ALLOWED_GUILD_IDS and guild_id is not None and str(guild_id) not in ALLOWED_GUILD_IDS:
+            logger.debug(f"Discord: dropping — guild {guild_id} not in whitelist")
             return
 
         if not self.is_allowed(sender_id):
+            logger.debug(f"Discord: dropping — sender {sender_id} not in allowFrom")
             return
 
-        # Ene: capture display name for context
+        logger.info(f"Discord: message from {author.get('username', '?')} passed all filters, forwarding to bus")
+
+        # Ene: capture display name + username for identity
+        # display_name = server nickname (changes) or global name
+        # username = stable Discord username (e.g., "ash_vi0") — rarely changes
         display_name = (payload.get("member") or {}).get("nick") or author.get("global_name") or author.get("username") or sender_id
+        username = author.get("username") or ""
+
+        # Ene: resolve own @mention to "ene" so _should_respond picks it up
+        if self._bot_user_id and f"<@{self._bot_user_id}>" in content:
+            content = content.replace(f"<@{self._bot_user_id}>", "@ene")
 
         content_parts = [content] if content else []
         media_paths: list[str] = []
@@ -218,7 +265,13 @@ class DiscordChannel(BaseChannel):
 
         reply_to = (payload.get("referenced_message") or {}).get("id")
 
-        await self._start_typing(channel_id)
+        # Ene: only start typing if she's likely to respond
+        # (mentioned by name, @mention, or it's a DM). Avoids infinite
+        # "Ene is typing..." on lurked public messages.
+        is_dm = guild_id is None
+        might_respond = is_dm or "ene" in content.lower()
+        if might_respond:
+            await self._start_typing(channel_id)
 
         await self._handle_message(
             sender_id=sender_id,
@@ -230,22 +283,30 @@ class DiscordChannel(BaseChannel):
                 "guild_id": payload.get("guild_id"),
                 "reply_to": reply_to,
                 "author_name": display_name,
+                "username": username,
             },
         )
 
     async def _start_typing(self, channel_id: str) -> None:
-        """Start periodic typing indicator for a channel."""
+        """Start periodic typing indicator for a channel.
+
+        Auto-expires after 30 seconds to prevent infinite typing on lurked
+        messages (where Ene never sends a response to clear the indicator).
+        """
         await self._stop_typing(channel_id)
 
         async def typing_loop() -> None:
             url = f"{DISCORD_API_BASE}/channels/{channel_id}/typing"
             headers = {"Authorization": f"Bot {self.config.token}"}
-            while self._running:
+            max_duration = 30  # seconds — auto-stop if no response sent
+            elapsed = 0
+            while self._running and elapsed < max_duration:
                 try:
                     await self._http.post(url, headers=headers)
                 except Exception:
                     pass
                 await asyncio.sleep(8)
+                elapsed += 8
 
         self._typing_tasks[channel_id] = asyncio.create_task(typing_loop())
 

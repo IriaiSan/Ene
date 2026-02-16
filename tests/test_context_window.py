@@ -355,47 +355,48 @@ class TestReanchoring:
         """Empty session should not trigger re-anchoring."""
         session = Session(key="test:reanchor")
         assistant_count = sum(1 for m in session.messages if m.get("role") == "assistant")
-        # Simulate the check from _should_reanchor
-        should = assistant_count > 0 and assistant_count % 10 == 0
+        # Simulate the check from _should_reanchor (interval = 6)
+        should = assistant_count > 0 and assistant_count % 6 == 0
         assert should is False
 
-    def test_reanchor_at_10(self):
-        """Should trigger at exactly 10 assistant messages."""
+    def test_reanchor_at_6(self):
+        """Should trigger at exactly 6 assistant messages (interval)."""
         session = Session(key="test:reanchor")
-        for i in range(10):
+        for i in range(6):
             session.add_message("user", f"Q{i}")
             session.add_message("assistant", f"A{i}")
         assistant_count = sum(1 for m in session.messages if m.get("role") == "assistant")
-        should = assistant_count > 0 and assistant_count % 10 == 0
+        should = assistant_count > 0 and assistant_count % 6 == 0
         assert should is True
 
-    def test_no_reanchor_at_11(self):
+    def test_no_reanchor_at_7(self):
         session = Session(key="test:reanchor")
-        for i in range(11):
+        for i in range(7):
             session.add_message("user", f"Q{i}")
             session.add_message("assistant", f"A{i}")
         assistant_count = sum(1 for m in session.messages if m.get("role") == "assistant")
-        should = assistant_count > 0 and assistant_count % 10 == 0
+        should = assistant_count > 0 and assistant_count % 6 == 0
         assert should is False
 
-    def test_reanchor_at_20(self):
+    def test_reanchor_at_12(self):
+        """Should trigger again at 12 (2x interval)."""
         session = Session(key="test:reanchor")
-        for i in range(20):
+        for i in range(12):
             session.add_message("user", f"Q{i}")
             session.add_message("assistant", f"A{i}")
         assistant_count = sum(1 for m in session.messages if m.get("role") == "assistant")
-        should = assistant_count > 0 and assistant_count % 10 == 0
+        should = assistant_count > 0 and assistant_count % 6 == 0
         assert should is True
 
     def test_lurked_messages_dont_affect_reanchor(self):
         """Only assistant messages count, not lurked user messages."""
         session = Session(key="test:reanchor")
-        # 50 lurked + 10 responded
+        # 50 lurked + 6 responded
         for i in range(50):
             session.add_message("user", f"Lurked {i}")
-        for i in range(10):
+        for i in range(6):
             session.add_message("user", f"Q{i}")
             session.add_message("assistant", f"A{i}")
         assistant_count = sum(1 for m in session.messages if m.get("role") == "assistant")
-        should = assistant_count > 0 and assistant_count % 10 == 0
+        should = assistant_count > 0 and assistant_count % 6 == 0
         assert should is True

@@ -161,14 +161,34 @@ class SocialModule(EneModule):
             "inner_circle": "Full trust. Be completely open. This is one of your closest people.",
         }.get(trust.tier, "Be polite.")
 
+        # Get stable username from platform identity (nicknames change, usernames don't)
+        username_str = ""
+        for pid_key, pid_val in person.platform_ids.items():
+            if isinstance(pid_val, dict):
+                uname = pid_val.get("username", "")
+            else:
+                uname = pid_val.username
+            if uname and uname != person.display_name.lower():
+                username_str = f" @{uname}"
+                break  # Use first available
+
+        # Also include known aliases for disambiguation
+        alias_str = ""
+        other_aliases = [a for a in person.aliases if a != person.display_name]
+        if other_aliases:
+            alias_str = f"Also known as: {', '.join(other_aliases[:5])}"
+
         lines = [
             "## Current Speaker",
-            f"**{person.display_name}** ({trust.tier}, {trust_pct}%, "
+            f"**{person.display_name}**{username_str} ({trust.tier}, {trust_pct}%, "
             f"{msg_count} msgs over {days_active} days)",
         ]
 
         if person.summary:
             lines.append(person.summary)
+
+        if alias_str:
+            lines.append(alias_str)
 
         if conn_str:
             lines.append(conn_str)

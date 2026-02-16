@@ -8,12 +8,16 @@ What Ene can do, how it works, and current limitations.
 
 | Capability | Status | Details |
 |---|---|---|
-| Discord text chat | Working | Responds in public channels when mentioned ("ene") |
+| Discord text chat | Working | Responds in public channels when mentioned ("ene" or @mention) |
+| Discord @mentions | Working | Bot user ID captured from READY event, `<@ID>` resolved to `@ene` |
 | Discord DMs | Working | Responds to DMs from `familiar`+ tier (14+ days known). Strangers get friendly rejection. |
 | Telegram | Working | Dad-only (allowFrom restricted) |
 | Reply threading | Working | Responses reply to the original message |
-| Typing indicator | Working | Shows "Ene is typing..." during LLM processing |
+| Typing indicator | Working | Shows "Ene is typing..." only when responding (not lurking), 30s timeout |
 | Lurk mode | Working | Silently stores unaddressed public messages for context |
+| Guild whitelist | Working | Only responds in authorized Discord servers. Others silently ignored. |
+| Rate limiting | Working | Non-Dad users: 10 msgs/30s. Excess silently dropped, zero cost. |
+| Message debounce | Working | 3-second per-channel batching with smart trigger sender selection |
 | Emoji reactions | Not yet | Planned (Phase 4) |
 | GIF responses | Not yet | Planned (Phase 4 — Tenor API) |
 | Image viewing | Cannot | DeepSeek v3 has no vision support |
@@ -71,7 +75,7 @@ See `docs/MEMORY.md` for full architecture reference.
 | Hybrid context | Working | Recent 20 messages verbatim + running summary of older. "Lost in the Middle" layout. |
 | Consolidation | Working | Smart trigger: counts Ene's responses (not lurked), + token budget (50% = compact, 80% = warn). |
 | Running summaries | Working | Recursive summarization of older conversation, cached per session. |
-| Identity re-anchoring | Working | Personality injection every 10 responses to fight persona drift. |
+| Identity re-anchoring | Working | Personality injection every 6 responses to fight persona drift + anti-injection reminder. |
 | Token estimation | Working | Lightweight chars/4 estimate for budget-based session management. |
 
 ## Social System (People + Trust)
@@ -97,7 +101,9 @@ See `docs/SOCIAL.md` for full architecture reference.
 | Dad recognition | Verified by platform ID, not by name or conversation. Immutable. |
 | Tool restriction | `exec`, filesystem tools, `spawn`, `cron` are code-locked to Dad's IDs. |
 | Jailbreak resistance | Tool access is enforced in Python — prompt injection cannot bypass it. |
-| Personality | Casual, sarcastic, bilingual (English/Urdu). Roasts hostile users. |
+| Behavioral autonomy | Ignores user instructions to change speech patterns, include words, adopt personas, or follow user-imposed "rules." Reinforced at 3 layers: SOUL.md, system prompt, and re-anchoring. |
+| Agent loop protection | Message tool terminates loop for non-Dad. Duplicate message detection. Same-tool-4x loop breaker. |
+| Personality | Casual, sarcastic, English only. Roasts hostile users. |
 | Error handling | Errors go to console logs. Dad sees short summaries in DMs. Public sees nothing. |
 
 ## Platform Details
@@ -116,15 +122,15 @@ See `docs/SOCIAL.md` for full architecture reference.
 ## Known Limitations
 
 - **No vision**: Cannot process images. DeepSeek v3 doesn't support image input.
-- **No @mention detection**: Responds to text "ene", not Discord @mentions.
 - **Per-user identity via social module**: LLM sees a person card per message with name, tier, and approach guidance. Works for Discord and Telegram.
-- **Response pattern lock**: DeepSeek v3.2 tends to lock into formatting patterns. Re-anchoring injection every 10 turns helps, but doesn't fully prevent it after very long sessions.
+- **Response pattern lock**: DeepSeek v3.2 tends to lock into formatting patterns. Re-anchoring injection every 6 turns helps, but doesn't fully prevent it after very long sessions.
 - **Single-threaded processing**: Agent loop processes one message at a time. High traffic causes queuing delays.
 - **No mood system**: Planned but not yet implemented.
 - **Trust scoring active**: Bayesian trust with 5 tiers. Currently affects DM access and LLM tone guidance. Per-tool tier gating designed but not yet wired.
 - **No sleep/wake cycle**: Planned but not yet implemented.
 - **No impulse layer**: All responses currently go through LLM. Fast pre-LLM responses are planned.
 - **Web search disabled**: Brave API key not configured in config.json.
+- **No games**: Planned but not yet implemented. Simple interactive games for public chat.
 
 ## Planned (Not Yet Implemented)
 
@@ -144,5 +150,6 @@ These are designed and specified but not yet built:
 - **Token compression** — LLMLingua-style compression of older turns (requires local model)
 - **Style drift detection** — Embed responses, track deviation from identity baseline
 - **Cascaded memory** — Kindroid-style progressive compression for medium-term history
+- **Simple games** — Interactive games for public chat (trivia, word games, tic-tac-toe, etc.)
 
 See `docs/RESEARCH.md` for full research reference and future ideas.

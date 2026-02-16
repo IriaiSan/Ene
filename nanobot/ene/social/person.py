@@ -368,6 +368,10 @@ class PersonRegistry:
                 pid.display_name = display_name
                 if display_name not in profile.aliases:
                     profile.aliases.append(display_name)
+            # Keep username fresh (stable identifier)
+            new_username = metadata.get("username", "")
+            if new_username and new_username != pid.username:
+                pid.username = new_username
         else:
             # New platform for existing person
             profile.platform_ids[platform_id] = PlatformIdentity(
