@@ -9,8 +9,12 @@ background threads, and unthreaded standalone messages.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import TYPE_CHECKING, Callable
+
+# Word-boundary match to avoid false positives ("generic", "scene", etc.)
+_ENE_PATTERN = re.compile(r"\bene\b", re.IGNORECASE)
 
 from .models import (
     ACTIVE,
@@ -175,7 +179,7 @@ def _select_trigger(
         if caller_id in DAD_IDS:
             trigger = m
             break
-        if "ene" in m.content.lower() or m.metadata.get("is_reply_to_ene"):
+        if bool(_ENE_PATTERN.search(m.content)) or m.metadata.get("is_reply_to_ene"):
             trigger = m
 
     return trigger

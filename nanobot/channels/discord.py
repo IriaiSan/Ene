@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,9 @@ from nanobot.config.schema import DiscordConfig
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20MB
+
+# Word-boundary match to avoid false positives ("generic", "scene", etc.)
+_ENE_PATTERN = re.compile(r"\bene\b", re.IGNORECASE)
 
 # Ene: only respond in these guilds (servers). Empty = all guilds allowed.
 # If someone adds Ene to another server, she'll ignore all messages there.
@@ -273,7 +277,7 @@ class DiscordChannel(BaseChannel):
         # (mentioned by name, @mention, reply to Ene, or it's a DM). Avoids infinite
         # "Ene is typing..." on lurked public messages.
         is_dm = guild_id is None
-        might_respond = is_dm or "ene" in content.lower() or is_reply_to_ene
+        might_respond = is_dm or bool(_ENE_PATTERN.search(content)) or is_reply_to_ene
         if might_respond:
             await self._start_typing(channel_id)
 

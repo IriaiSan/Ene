@@ -4,6 +4,21 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-18f] — Fix Session Thread Duplication + Complete Word-Boundary Cleanup
+
+### Fixed — Session Thread Content Duplication (Root cause: Ene replying to old messages)
+- Conversation tracker rebuilds ALL active threads each batch (first+last windowing)
+- Storing full thread-formatted content in session history caused the LLM to see the same messages duplicated across turns
+- Added `_condense_for_session()` helper that strips thread chrome, keeping only `#msgN` lines
+- Applied to all 3 session storage paths: lurk (line 1711), no-response (line 1866), response (line 1886)
+
+### Fixed — Remaining Word-Boundary "ene" Matches
+- `formatter.py` `_select_trigger()`: `"ene" in m.content.lower()` → `_ENE_PATTERN.search()`
+- `discord.py` typing indicator: `"ene" in content.lower()` → `_ENE_PATTERN.search()`
+- Zero `"ene" in` substring matches remain in codebase
+
+---
+
 ## [2026-02-18e] — Live Bug Fixes: Daemon Model + Session Rotation + Stale Detection
 
 ### Fixed — Daemon Model Timeout

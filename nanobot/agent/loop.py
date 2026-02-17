@@ -92,6 +92,38 @@ def _has_content_impersonation(content: str, caller_id: str) -> bool:
     return False
 
 
+def _condense_for_session(content: str, metadata: dict) -> str:
+    """Condense thread-formatted content for session storage.
+
+    The conversation tracker formats ALL active threads each time (first+last
+    windowing). If we store the full thread context in session history, the
+    LLM sees the same thread messages duplicated across turns. This strips
+    the thread chrome and keeps only the NEW messages from the current batch.
+
+    If the content doesn't look thread-formatted, returns it as-is.
+    """
+    if not metadata.get("debounced"):
+        return content
+
+    # Extract just the #msgN lines (actual message content)
+    lines = content.split("\n")
+    msg_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Keep #msgN lines (the actual messages)
+        if stripped.startswith("#msg"):
+            msg_lines.append(stripped)
+        # Keep section headers as brief markers
+        elif stripped.startswith("[background"):
+            msg_lines.append("[background]")
+
+    if msg_lines:
+        return "\n".join(msg_lines)
+
+    # Fallback: content doesn't have #msg tags (flat merge), return as-is
+    return content
+
+
 def _sanitize_dad_ids(content: str, caller_id: str) -> str:
     """Strip Dad's raw platform IDs from non-Dad message content.
 
@@ -1674,7 +1706,8 @@ Write the summary:"""
             self._check_auto_mute(msg)
 
             # Ene: sanitize Dad's raw IDs from non-Dad messages in lurk mode too
-            sanitized_content = _sanitize_dad_ids(msg.content, caller_id)
+            _hist_content_lurk = _condense_for_session(msg.content, msg.metadata or {})
+            sanitized_content = _sanitize_dad_ids(_hist_content_lurk, caller_id)
 
             session.add_message("user", f"{author}: {sanitized_content}")
             self.sessions.save(session)
@@ -1826,9 +1859,12 @@ Write the summary:"""
                 f"(tools_used={tools_used}). Response likely already sent via tool, "
                 f"or loop broke. NOT sending fallback message."
             )
-            # Still store in session so history isn't lost (sanitize Dad IDs)
+            # Still store in session so history isn't lost
+            # Condense thread-formatted content to avoid duplicating thread
+            # context across turns (conversation tracker rebuilds it each time)
             _hist_pid = f"{msg.channel}:{msg.sender_id}"
-            session.add_message("user", _sanitize_dad_ids(msg.content, _hist_pid))
+            _hist_content = _condense_for_session(msg.content, msg.metadata or {})
+            session.add_message("user", _sanitize_dad_ids(_hist_content, _hist_pid))
             session.add_message("assistant", "",
                                 tools_used=tools_used if tools_used else None)
             self.sessions.save(session)
@@ -1847,7 +1883,8 @@ Write the summary:"""
 
         # Ene: store response in session (sanitize Dad IDs from user content)
         _hist_pid = f"{msg.channel}:{msg.sender_id}"
-        session.add_message("user", _sanitize_dad_ids(msg.content, _hist_pid))
+        _hist_content = _condense_for_session(msg.content, msg.metadata or {})
+        session.add_message("user", _sanitize_dad_ids(_hist_content, _hist_pid))
         session.add_message("assistant", final_content,
                             tools_used=tools_used if tools_used else None)
         self.sessions.save(session)
