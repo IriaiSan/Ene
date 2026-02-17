@@ -337,6 +337,23 @@ class PersonRegistry:
         self._save_profile(profile)
         self._cache[profile.id] = profile
 
+    # Known Dad display names — used to block impersonation aliases
+    _DAD_NAMES = {"iitai", "litai", "言いたい", "iitai / 言いたい", "litai / 言いたい", "dad"}
+
+    def _is_dad_alias(self, name: str) -> bool:
+        """Check if a display name matches one of Dad's known identities."""
+        name_lower = name.lower().strip()
+        if name_lower in self._DAD_NAMES:
+            return True
+        # Check against actual Dad profile aliases
+        for dad_pid in DAD_IDS:
+            dad = self.get_by_platform_id(dad_pid)
+            if dad:
+                if any(name_lower == a.lower() for a in dad.aliases):
+                    return True
+                break
+        return False
+
     def record_interaction(
         self,
         platform_id: str,
@@ -367,7 +384,15 @@ class PersonRegistry:
             if display_name and display_name != pid.display_name:
                 pid.display_name = display_name
                 if display_name not in profile.aliases:
-                    profile.aliases.append(display_name)
+                    # Alias validation: don't add aliases that belong to Dad
+                    # (prevents impersonation display names from persisting)
+                    if platform_id not in DAD_IDS and self._is_dad_alias(display_name):
+                        logger.warning(
+                            f"Blocked alias '{display_name}' for {profile.display_name} "
+                            f"— matches Dad's identity"
+                        )
+                    else:
+                        profile.aliases.append(display_name)
             # Keep username fresh (stable identifier)
             new_username = metadata.get("username", "")
             if new_username and new_username != pid.username:
