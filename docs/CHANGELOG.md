@@ -4,6 +4,36 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-18b] — Conversation Tracker Module + Response Leak Fix + Cost Reduction
+
+### Added — Conversation Tracker (Module 5)
+Multi-thread conversation tracking system that detects, tracks, and presents separate conversation threads to Ene instead of a flat merged trace.
+
+- **`nanobot/ene/conversation/`** — New module with 6 files:
+  - `models.py` — Thread, ThreadMessage, PendingMessage dataclasses + state machine constants
+  - `signals.py` — 5 heuristic scoring functions (reply chain 1.0, mention 0.9, temporal 0.4, speaker 0.4, lexical 0.3) with 0.5 threshold
+  - `tracker.py` — Core engine: `ingest_batch()` assigns messages to threads, `build_context()` produces formatted output
+  - `formatter.py` — Multi-thread context builder: Ene threads (first 2 + last 4 with gap indicator), background threads, unthreaded messages
+  - `storage.py` — Atomic JSON persistence + JSONL daily archives
+  - `__init__.py` — ConversationTrackerModule (EneModule) with on_idle tick, on_daily archive, shutdown save
+- **Thread lifecycle**: ACTIVE → STALE (5 min) → DEAD (15 min), with RESOLVED state for closed conversations
+- **Pending message pattern**: Single messages wait in buffer; only form threads when a second related message arrives
+- **Graceful fallback**: If tracker fails, `_merge_messages_tiered()` flat merge still works
+- **94 new tests** across 5 test files (555 total, 0 failures)
+
+### Fixed — `[no direct response]` leaking to Discord users
+When Ene responds via message tool (returns None from agent loop), the placeholder string `[no direct response — sent via tool or loop ended]` was stored in session history. Next message, the LLM would see it and echo it to users. Fixed by storing empty string instead — interaction logs still record the debug info separately.
+
+### Fixed — Token bloat / response cost reduction
+- Tightened conversation tracker display constants: last 4 messages (was 6), max 3 Ene threads (was 4), max 2 background (was 3)
+- Reduced hybrid history verbatim window from 20 to 12 messages
+- Throttled running summary regeneration to every 3 messages (was every message) — saves 1 extra LLM call per 3 messages
+
+### Fixed — Debounce busy re-buffering log storm
+When a message takes >1 minute to process, the debounce retry loop was firing every 1 second with no backoff, spamming 60+ identical log lines. Added exponential backoff (1s → 2s → 4s → 8s cap) and log throttling (only logs 1st retry and every 10th after). Reset on channel free.
+
+---
+
 ## [2026-02-18a] — System Audit Fixes (data cleanup + trust bridge + consolidation hardening)
 
 ### Fixed — Social profile alias contamination (C1)

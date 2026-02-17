@@ -282,6 +282,7 @@ class AgentLoop:
         self._last_message_time = 0.0  # Ene: for idle tracking
         self._idle_watcher_task: asyncio.Task | None = None
         self._session_summaries: dict[str, str] = {}  # Ene: running summaries per session key
+        self._summary_msg_counters: dict[str, int] = {}  # Ene: messages since last summary regen (throttle)
         self._reanchor_interval = 6  # Ene: re-inject identity every N assistant messages (lowered from 10 for anti-injection)
         self._log_dir = workspace / "memory" / "logs"  # Ene: debug trace log directory
         self._trace: DebugTrace | None = None  # Ene: current debug trace (per message)
@@ -293,6 +294,7 @@ class AgentLoop:
         self._processing_channels: set[str] = set()  # channels currently being processed
         self._debounce_max_buffer = 10  # max messages per debounce batch (drops oldest)
         self._debounce_max_rebuffer = 15  # max re-buffered messages before dropping
+        self._debounce_retry_counts: dict[str, int] = {}  # Ene: retry counts for exponential backoff
 
         # Ene: per-user rate limiting — prevents spam attacks
         self._user_message_timestamps: dict[str, list[float]] = {}  # user_id -> [timestamps]
@@ -418,6 +420,10 @@ class AgentLoop:
             watchdog_module = WatchdogModule()
             self.module_registry.register(watchdog_module)
 
+            # Register Conversation Tracker Module (Module 5: thread detection)
+            from nanobot.ene.conversation import ConversationTrackerModule
+            self.module_registry.register(ConversationTrackerModule())
+
         except Exception as e:
             logger.error(f"Failed to register Ene modules: {e}", exc_info=True)
 
@@ -438,6 +444,14 @@ class AgentLoop:
             sessions=self.sessions,
         )
         await self.module_registry.initialize_all(ctx)
+
+        # Wire conversation tracker → social module for name resolution
+        conv_mod = self.module_registry.get_module("conversation_tracker")
+        social_mod = self.module_registry.get_module("social")
+        if conv_mod and hasattr(conv_mod, "tracker") and conv_mod.tracker and social_mod:
+            registry = getattr(social_mod, "registry", None)
+            if registry:
+                conv_mod.tracker.set_social_registry(registry)
 
         # Register module tools with the ToolRegistry
         for tool in self.module_registry.get_all_tools():
@@ -851,7 +865,7 @@ class AgentLoop:
         if not messages:
             return
 
-        # If this channel is already being processed, re-buffer and retry after a delay
+        # If this channel is already being processed, re-buffer and retry with backoff
         if channel_key in self._processing_channels:
             # Ene: cap re-buffer size — if overwhelmed, drop oldest to prevent memory bloat
             if len(messages) > self._debounce_max_rebuffer:
@@ -859,10 +873,17 @@ class AgentLoop:
                 messages = messages[-self._debounce_max_buffer:]
                 logger.warning(f"Debounce: {channel_key} overwhelmed, dropped {dropped} messages (re-buffer cap)")
             else:
-                logger.debug(f"Debounce: {channel_key} busy, re-buffering {len(messages)} messages")
+                # Ene: exponential backoff + log throttle to avoid spamming 60+ lines
+                retry_count = self._debounce_retry_counts.get(channel_key, 0) + 1
+                self._debounce_retry_counts[channel_key] = retry_count
+                if retry_count == 1 or retry_count % 10 == 0:
+                    logger.debug(f"Debounce: {channel_key} busy, re-buffering {len(messages)} messages (retry {retry_count})")
             self._debounce_buffers[channel_key] = messages
+            # Ene: exponential backoff — 1s, 2s, 4s, 8s max
+            retry_count = self._debounce_retry_counts.get(channel_key, 0)
+            delay = min(1.0 * (2 ** min(retry_count - 1, 3)), 8.0) if retry_count > 0 else 1.0
             self._debounce_timers[channel_key] = asyncio.create_task(
-                self._debounce_timer(channel_key, 1.0)  # shorter retry
+                self._debounce_timer(channel_key, delay)
             )
             return
 
@@ -884,6 +905,11 @@ class AgentLoop:
         # No respond messages → lurk all context messages (no LLM call)
         if not respond_msgs:
             if context_msgs:
+                # Feed lurked messages into conversation tracker for thread state
+                _conv_mod = self.module_registry.get_module("conversation_tracker")
+                if _conv_mod and hasattr(_conv_mod, "tracker") and _conv_mod.tracker:
+                    _conv_mod.tracker.ingest_batch([], context_msgs, channel_key)
+
                 session = self.sessions.get_or_create(channel_key)
                 for m in context_msgs:
                     author = self._format_author(m)
@@ -893,8 +919,20 @@ class AgentLoop:
                 logger.debug(f"Debounce: {len(context_msgs)} context-only messages in {channel_key}, lurked")
             return
 
-        # Tiered merge: conversation trace with RESPOND/CONTEXT sections
-        merged = self._merge_messages_tiered(respond_msgs, context_msgs)
+        # Thread-aware merge via conversation tracker (falls back to flat merge)
+        _conv_mod = self.module_registry.get_module("conversation_tracker")
+        if _conv_mod and hasattr(_conv_mod, "tracker") and _conv_mod.tracker:
+            try:
+                _conv_mod.tracker.ingest_batch(respond_msgs, context_msgs, channel_key)
+                merged = _conv_mod.tracker.build_context(
+                    respond_msgs, context_msgs, channel_key,
+                    format_author_fn=self._format_author,
+                )
+            except Exception as e:
+                logger.error(f"Conversation tracker failed, falling back to flat merge: {e}")
+                merged = self._merge_messages_tiered(respond_msgs, context_msgs)
+        else:
+            merged = self._merge_messages_tiered(respond_msgs, context_msgs)
         # Check if suspicious actions during merge should trigger auto-mute
         self._check_auto_mute(merged)
         self._processing_channels.add(channel_key)
@@ -914,6 +952,7 @@ class AgentLoop:
                 ))
         finally:
             self._processing_channels.discard(channel_key)
+            self._debounce_retry_counts.pop(channel_key, None)  # Ene: reset backoff on channel free
 
     def _is_rate_limited(self, msg: "InboundMessage") -> bool:
         """Check if a non-Dad user is sending too fast (spam protection).
@@ -1320,10 +1359,17 @@ class AgentLoop:
         Only called when session has enough messages to warrant summarization.
         """
         # How many recent messages to keep verbatim
-        recent_count = 20
+        recent_count = 12
 
         if len(session.messages) <= recent_count:
             return self._session_summaries.get(key)
+
+        # Ene: throttle — only regenerate summary every 3 messages to avoid extra LLM calls
+        counter = self._summary_msg_counters.get(key, 0) + 1
+        self._summary_msg_counters[key] = counter
+        if counter < 3 and key in self._session_summaries:
+            return self._session_summaries[key]  # reuse cached summary
+        self._summary_msg_counters[key] = 0  # reset counter on regen
 
         # Messages that need summarizing: everything before the recent window
         older_messages = session.messages[:-recent_count]
@@ -1523,6 +1569,7 @@ Write the summary:"""
             self.sessions.save(session)
             self.sessions.invalidate(session.key)
             self._session_summaries.pop(key, None)  # Ene: clear running summary
+            self._summary_msg_counters.pop(key, None)  # Ene: clear summary throttle
 
             async def _consolidate_and_cleanup():
                 temp_session = Session(key=session.key)
@@ -1562,7 +1609,7 @@ Write the summary:"""
         # Ene: hybrid context window
         # If session is large enough, use summary of older + verbatim recent
         # (per "Lost in the Middle" research: summaries in middle, recent at end)
-        recent_verbatim = 20  # Recent messages kept word-for-word
+        recent_verbatim = 12  # Recent messages kept word-for-word (reduced from 20 to cut token cost)
         if len(session.messages) > recent_verbatim + 5:
             # Generate/update running summary for older messages
             summary = await self._generate_running_summary(session, key)
@@ -1635,7 +1682,7 @@ Write the summary:"""
             )
             # Still store in session so history isn't lost
             session.add_message("user", msg.content)
-            session.add_message("assistant", "[no direct response — sent via tool or loop ended]",
+            session.add_message("assistant", "",
                                 tools_used=tools_used if tools_used else None)
             self.sessions.save(session)
             # Write to interaction logs for analysis
