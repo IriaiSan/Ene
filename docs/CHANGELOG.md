@@ -4,6 +4,19 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-18i] — Updated Daemon Free Models
+
+### Changed — Free Model Rotation List
+- Old models removed from OpenRouter: `llama-4-maverick:free`, `qwen3-30b-a3b:free` (explains constant daemon timeouts)
+- New rotation list prioritized by structured output support:
+  1. `qwen/qwen3-next-80b-a3b-instruct:free` — native structured output, 80B MoE
+  2. `mistralai/mistral-small-3.1-24b-instruct:free` — excellent JSON following
+  3. `nvidia/nemotron-nano-9b-v2:free` — small + fast, structured output
+  4. `meta-llama/llama-3.3-70b-instruct:free` — big + reliable
+- Updated observatory pricing table to match
+
+---
+
 ## [2026-02-18h] — Ene-Signal Hard Override + Daemon Logging
 
 ### Fixed — Daemon Misclassifying Obvious "ene" Mentions as CONTEXT
