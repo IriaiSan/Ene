@@ -20,9 +20,13 @@ Pipeline integration:
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from loguru import logger
+
+# Word-boundary match to avoid false positives ("generic", "scene", etc.)
+_ENE_PATTERN = re.compile(r"\bene\b", re.IGNORECASE)
 
 from nanobot.ene import EneModule, EneContext
 
@@ -160,7 +164,7 @@ class DaemonModule(EneModule):
         """
         if not self.processor:
             # Module not initialized — use same logic as hardcoded fallback
-            has_ene_signal = "ene" in content.lower() or bool(
+            has_ene_signal = bool(_ENE_PATTERN.search(content)) or bool(
                 metadata and metadata.get("is_reply_to_ene")
             )
             classification = Classification.RESPOND if has_ene_signal else Classification.CONTEXT

@@ -34,6 +34,9 @@ from nanobot.ene import EneContext, ModuleRegistry
 DAD_IDS = {"telegram:8559611823", "discord:1175414972482846813"}
 RESTRICTED_TOOLS = {"exec", "write_file", "edit_file", "read_file", "list_dir", "spawn", "cron", "view_metrics", "view_experiments"}
 
+# Word-boundary match to avoid false positives ("generic", "scene", etc.)
+_ENE_PATTERN = re.compile(r"\bene\b", re.IGNORECASE)
+
 # Ene: impersonation detection — Dad's known display names (lowercased)
 # If someone's display name looks like one of these but their ID isn't Dad's,
 # it's an impersonation attempt and Ene should be warned.
@@ -712,7 +715,7 @@ class AgentLoop:
         if self._is_muted(caller_id):
             return "drop"
 
-        has_ene_signal = "ene" in msg.content.lower() or msg.metadata.get("is_reply_to_ene")
+        has_ene_signal = bool(_ENE_PATTERN.search(msg.content)) or msg.metadata.get("is_reply_to_ene")
         if has_ene_signal:
             return "respond"
 
@@ -794,7 +797,7 @@ class AgentLoop:
             if caller_id in DAD_IDS:
                 trigger_msg = m
                 break
-            if "ene" in m.content.lower() or m.metadata.get("is_reply_to_ene"):
+            if bool(_ENE_PATTERN.search(m.content)) or m.metadata.get("is_reply_to_ene"):
                 trigger_msg = m
 
         base = all_msgs[-1]
@@ -847,7 +850,7 @@ class AgentLoop:
             if caller_id in DAD_IDS:
                 trigger_msg = m
                 break
-            if "ene" in m.content.lower() or m.metadata.get("is_reply_to_ene"):
+            if bool(_ENE_PATTERN.search(m.content)) or m.metadata.get("is_reply_to_ene"):
                 trigger_msg = m
 
         logger.info(
@@ -884,6 +887,59 @@ class AgentLoop:
         """
         if not messages:
             return
+
+        # Ene: stale message detection — tag messages that sat in queue too long
+        from datetime import datetime, timedelta
+        _now = datetime.now()
+        _STALE_THRESHOLD = timedelta(minutes=5)
+        for m in messages:
+            msg_age = _now - m.timestamp
+            if msg_age > _STALE_THRESHOLD:
+                m.metadata["_is_stale"] = True
+                m.metadata["_stale_minutes"] = int(msg_age.total_seconds() / 60)
+
+        # Ene: auto-session rotation at 80% budget — prevents degradation
+        HISTORY_TOKEN_BUDGET = 60_000
+        session = self.sessions.get_or_create(channel_key)
+        estimated_tokens = session.estimate_tokens()
+        if estimated_tokens > HISTORY_TOKEN_BUDGET * 0.8:
+            logger.warning(
+                f"Session {channel_key} at {estimated_tokens} tokens "
+                f"(~{estimated_tokens * 100 // HISTORY_TOKEN_BUDGET}% budget), auto-rotating"
+            )
+            # Generate summary BEFORE clearing
+            _rotation_summary = self._session_summaries.get(channel_key, "")
+            if not _rotation_summary and len(session.messages) > 5:
+                try:
+                    _rotation_summary = await self._generate_running_summary(session, channel_key) or ""
+                except Exception:
+                    _rotation_summary = ""
+
+            messages_to_archive = list(session.messages)
+            session.messages.clear()
+
+            # Inject summary as seed context for new session
+            if _rotation_summary:
+                session.messages.append({
+                    "role": "system",
+                    "content": f"[Previous session summary: {_rotation_summary}]",
+                })
+
+            self.sessions.save(session)
+            self.sessions.invalidate(session.key)
+            self._session_summaries.pop(channel_key, None)
+            self._summary_msg_counters.pop(channel_key, None)
+
+            # Background consolidation of archived messages
+            async def _consolidate_old(_msgs=messages_to_archive, _key=channel_key):
+                temp_session = Session(key=_key)
+                temp_session.messages = _msgs
+                await self._consolidate_memory(temp_session, archive_all=True)
+            asyncio.create_task(_consolidate_old())
+            logger.info(
+                f"Auto-rotated session {channel_key} ({estimated_tokens} tokens), "
+                f"summary {'injected' if _rotation_summary else 'empty'}"
+            )
 
         # Ene: per-message classification — daemon-enhanced filtering
         respond_msgs: list[InboundMessage] = []
@@ -1368,8 +1424,8 @@ class AgentLoop:
         if msg.channel != "discord":
             return True
 
-        # Respond if "ene" is mentioned in the message
-        if "ene" in msg.content.lower():
+        # Respond if "ene" is mentioned in the message (word-boundary to avoid "scene", "generic", etc.)
+        if _ENE_PATTERN.search(msg.content):
             return True
 
         # Ene: respond when someone replies to one of Ene's messages
@@ -1634,9 +1690,26 @@ Write the summary:"""
         # Handle slash commands
         cmd = msg.content.strip().lower()
         if cmd == "/new":
+            # Ene: capture running summary BEFORE clearing so the new session
+            # starts with context from the previous conversation
+            existing_summary = self._session_summaries.get(key, "")
+            if not existing_summary and len(session.messages) > 5:
+                try:
+                    existing_summary = await self._generate_running_summary(session, key) or ""
+                except Exception:
+                    existing_summary = ""
+
             # Capture messages before clearing (avoid race condition with background task)
             messages_to_archive = session.messages.copy()
             session.clear()
+
+            # Inject summary as seed context for new session
+            if existing_summary:
+                session.messages.append({
+                    "role": "system",
+                    "content": f"[Previous session summary: {existing_summary}]",
+                })
+
             self.sessions.save(session)
             self.sessions.invalidate(session.key)
             self._session_summaries.pop(key, None)  # Ene: clear running summary
@@ -1669,10 +1742,12 @@ Write the summary:"""
         )
         if should_consolidate:
             asyncio.create_task(self._consolidate_memory(session))
-            if estimated_tokens > HISTORY_TOKEN_BUDGET * 0.8:  # 80% = hard compact
-                logger.warning(
-                    f"Session {key} at {estimated_tokens} tokens (~{estimated_tokens * 100 // HISTORY_TOKEN_BUDGET}% budget), "
-                    f"consider /new to reset"
+            if estimated_tokens > HISTORY_TOKEN_BUDGET * 0.8:
+                # Auto-rotation in _process_batch handles this, but log as safety net
+                logger.info(
+                    f"Session {key} at {estimated_tokens} tokens "
+                    f"(~{estimated_tokens * 100 // HISTORY_TOKEN_BUDGET}% budget), "
+                    f"will auto-rotate on next batch"
                 )
 
         self._set_tool_context(msg.channel, msg.chat_id)

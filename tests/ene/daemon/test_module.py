@@ -151,6 +151,25 @@ class TestProcessMessage:
         assert result.fallback_used is True
 
     @pytest.mark.asyncio
+    async def test_not_initialized_word_boundary_scene_context(self):
+        """'scene' contains 'ene' substring but should NOT trigger RESPOND."""
+        mod = DaemonModule()
+        result = await mod.process_message("nice scene", "User", "123", False)
+        assert result.classification == Classification.CONTEXT
+
+    @pytest.mark.asyncio
+    async def test_not_initialized_word_boundary_generic_context(self):
+        mod = DaemonModule()
+        result = await mod.process_message("generic stuff", "User", "123", False)
+        assert result.classification == Classification.CONTEXT
+
+    @pytest.mark.asyncio
+    async def test_not_initialized_ene_standalone_respond(self):
+        mod = DaemonModule()
+        result = await mod.process_message("hey ene!", "User", "123", False)
+        assert result.classification == Classification.RESPOND
+
+    @pytest.mark.asyncio
     async def test_stores_last_result(self):
         mod = DaemonModule()
         ctx = FakeContext()

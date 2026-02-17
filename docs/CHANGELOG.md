@@ -4,6 +4,40 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-18e] — Live Bug Fixes: Daemon Model + Session Rotation + Stale Detection
+
+### Fixed — Daemon Model Timeout
+- Config had `daemonModel: "openrouter/auto"` which bypassed free model rotation (always timed out)
+- Set to `null` so daemon uses `DEFAULT_FREE_MODELS` rotation (`llama-4-maverick:free`, `qwen3-30b-a3b:free`, etc.)
+- Fixed Dad tag: `[THIS IS DAD - always respond]` → `[THIS IS DAD - respond unless clearly talking to someone else]`
+
+### Fixed — Word-Boundary "ene" Matching
+- `"ene" in content` matched substrings: "sc**ene**", "gen**ene**ric", "en**ene**my"
+- Replaced with `re.compile(r"\bene\b", re.IGNORECASE)` in all 3 files (processor, daemon module, loop)
+
+### Added — Stale Message Detection
+- Messages older than 5 minutes get tagged `_is_stale` with age in minutes
+- Daemon LLM sees `[MESSAGE IS STALE - sent X min ago]` tag; prompt prefers "context" for stale messages
+- Hardcoded fallback: stale non-Dad without Ene mention → CONTEXT (saves tokens)
+- Dad's stale messages still get normal classification
+
+### Added — Auto-Session Rotation at 80% Budget
+- Session auto-rotates when token estimate hits 80% of 60K budget (was: only logged a warning at 80%)
+- Running summary captured before clearing, injected as `[Previous session summary: ...]` in new session
+- Background consolidation archives old messages into diary
+
+### Added — Summary Injection on /new
+- Manual `/new` command now injects previous session summary into the fresh session
+- Ene keeps context from the previous conversation instead of starting blank
+
+### Tests — 669 passing (up from 653)
+- Word-boundary tests: "scene", "generic", "energy" don't trigger RESPOND
+- Stale message tests: stale non-Dad → CONTEXT, stale Dad → normal, stale with Ene mention → RESPOND
+- Stale marker tests: stale tag in daemon user message, absent for fresh messages
+- Not-initialized word-boundary tests in daemon module
+
+---
+
 ## [2026-02-18d] — Debounce Queue + Dad Daemon Filtering + Session Sanitization
 
 ### Changed — Debounce Queue System

@@ -335,6 +335,79 @@ class TestHardcodedFallback:
         result = self.proc._hardcoded_fallback("test", "456", False, start)
         assert result.model_used == "hardcoded_fallback"
 
+    # ── Word-boundary tests ──
+
+    def test_word_boundary_scene_not_respond(self):
+        """'scene' contains 'ene' but should NOT trigger RESPOND."""
+        start = time.perf_counter()
+        result = self.proc._hardcoded_fallback("nice scene", "456", False, start)
+        assert result.classification == Classification.CONTEXT
+
+    def test_word_boundary_generic_not_respond(self):
+        start = time.perf_counter()
+        result = self.proc._hardcoded_fallback("generic stuff", "456", False, start)
+        assert result.classification == Classification.CONTEXT
+
+    def test_word_boundary_energy_not_respond(self):
+        start = time.perf_counter()
+        result = self.proc._hardcoded_fallback("so much energy", "456", False, start)
+        assert result.classification == Classification.CONTEXT
+
+    def test_word_boundary_ene_standalone_responds(self):
+        """Standalone 'ene' should still trigger RESPOND."""
+        start = time.perf_counter()
+        result = self.proc._hardcoded_fallback("hey ene!", "456", False, start)
+        assert result.classification == Classification.RESPOND
+
+    def test_word_boundary_ene_at_start(self):
+        start = time.perf_counter()
+        result = self.proc._hardcoded_fallback("Ene what do you think", "456", False, start)
+        assert result.classification == Classification.RESPOND
+
+    def test_word_boundary_ene_comma(self):
+        start = time.perf_counter()
+        result = self.proc._hardcoded_fallback("hey, ene, check this", "456", False, start)
+        assert result.classification == Classification.RESPOND
+
+    # ── Stale message tests ──
+
+    def test_stale_non_dad_no_ene_context(self):
+        """Stale message from non-Dad without Ene mention → CONTEXT."""
+        start = time.perf_counter()
+        result = self.proc._hardcoded_fallback(
+            "hello everyone", "456", False, start,
+            metadata={"_is_stale": True, "_stale_minutes": 10},
+        )
+        assert result.classification == Classification.CONTEXT
+        assert "Stale" in result.classification_reason
+
+    def test_stale_non_dad_with_ene_respond(self):
+        """Stale message mentioning Ene still gets RESPOND."""
+        start = time.perf_counter()
+        result = self.proc._hardcoded_fallback(
+            "hey ene are you there", "456", False, start,
+            metadata={"_is_stale": True, "_stale_minutes": 10},
+        )
+        assert result.classification == Classification.RESPOND
+
+    def test_stale_dad_normal_classification(self):
+        """Dad's stale messages still get normal Dad classification."""
+        start = time.perf_counter()
+        result = self.proc._hardcoded_fallback(
+            "hello", "123", True, start,
+            metadata={"_is_stale": True, "_stale_minutes": 15},
+        )
+        assert result.classification == Classification.CONTEXT
+        assert "Dad" in result.classification_reason  # Normal Dad logic
+
+    def test_stale_dad_with_ene_respond(self):
+        start = time.perf_counter()
+        result = self.proc._hardcoded_fallback(
+            "hey ene", "123", True, start,
+            metadata={"_is_stale": True},
+        )
+        assert result.classification == Classification.RESPOND
+
 
 # ── Full process() flow ──────────────────────────────────────────────────
 
@@ -462,6 +535,30 @@ class TestProcess:
         assert "REPLYING TO ENE" in messages[1]["content"]
 
     @pytest.mark.asyncio
+    async def test_stale_marker_in_prompt(self):
+        """Stale messages include [MESSAGE IS STALE] marker."""
+        provider = make_provider(GOOD_RESPONSE)
+        proc = make_processor(provider=provider, model="test/model")
+        await proc.process(
+            "hello", "User", "123", False,
+            metadata={"_is_stale": True, "_stale_minutes": 10},
+        )
+
+        messages = provider.chat.call_args[1]["messages"]
+        assert "MESSAGE IS STALE" in messages[1]["content"]
+        assert "10 min" in messages[1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_no_stale_marker_for_fresh(self):
+        """Fresh messages do NOT include stale marker."""
+        provider = make_provider(GOOD_RESPONSE)
+        proc = make_processor(provider=provider, model="test/model")
+        await proc.process("hello", "User", "123", False)
+
+        messages = provider.chat.call_args[1]["messages"]
+        assert "STALE" not in messages[1]["content"]
+
+    @pytest.mark.asyncio
     async def test_content_truncated(self):
         """Very long messages are truncated to 2000 chars."""
         provider = make_provider(CONTEXT_RESPONSE)
@@ -508,3 +605,6 @@ class TestDaemonPrompt:
 
     def test_prompt_mentions_dad(self):
         assert "Dad" in DAEMON_PROMPT
+
+    def test_prompt_mentions_stale(self):
+        assert "STALE" in DAEMON_PROMPT
