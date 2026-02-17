@@ -4,6 +4,16 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-18g] — Dad-Alone Promotion
+
+### Fixed — Dad Messages Lurked When Alone
+- Dad sending messages without "ene" mention got classified CONTEXT → lurked silently
+- Added Dad-alone promotion in `_process_batch`: if ALL messages in a batch are from Dad and all are CONTEXT, promote to RESPOND
+- Logic: Dad talking alone in a channel is talking to Ene, not "someone else"
+- Only triggers when no other users are in the batch (mixed batches still use daemon classification)
+
+---
+
 ## [2026-02-18f] — Fix Session Thread Duplication + Complete Word-Boundary Cleanup
 
 ### Fixed — Session Thread Content Duplication (Root cause: Ene replying to old messages)

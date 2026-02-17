@@ -1030,6 +1030,21 @@ class AgentLoop:
         if dropped:
             logger.debug(f"Debounce: dropped {dropped} messages in {channel_key}")
 
+        # Ene: Dad-alone promotion — if only Dad is in the batch and all messages
+        # were classified CONTEXT, promote to RESPOND. Dad talking alone in a channel
+        # is talking to Ene, not "someone else".
+        if not respond_msgs and context_msgs:
+            all_dad = all(
+                f"{m.channel}:{m.sender_id}" in DAD_IDS for m in context_msgs
+            )
+            if all_dad:
+                logger.debug(
+                    f"Debounce: Dad-alone promotion — {len(context_msgs)} messages "
+                    f"promoted CONTEXT → RESPOND in {channel_key}"
+                )
+                respond_msgs = context_msgs
+                context_msgs = []
+
         # No respond messages → lurk all context messages (no LLM call)
         if not respond_msgs:
             if context_msgs:
