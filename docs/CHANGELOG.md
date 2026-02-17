@@ -4,6 +4,129 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-17q] — Conversation Trace + Per-User Classification + Reply Targeting
+
+### Added — Tiered message classification in debounce
+Messages are now individually classified as RESPOND/CONTEXT/DROP before merging, fixing the debounce bypass where muted users' messages slipped through when mixed with non-muted users.
+
+- **`_classify_message()`** in `loop.py` — Per-message classification:
+  - DROP: muted users (silently removed before LLM sees them)
+  - RESPOND: Dad, mentions Ene by name, replies to Ene
+  - CONTEXT: background chatter (LLM sees it, doesn't need to respond)
+- **`_merge_messages_tiered()`** — Conversation trace builder:
+  - `#msgN` sequential tags (not real Discord IDs) for each message
+  - `[conversation trace]` section for RESPOND messages
+  - `[background]` section for CONTEXT messages
+  - Windowing: first 2 + last 10 for respond, last 5 for context
+  - `msg_id_map` in metadata maps `#msgN` → real Discord message IDs
+- **`_format_author()`** — Extracted helper (reused by merge, lurk mode, and flush)
+- **`_flush_debounce()` rewrite** — Classifies before merging:
+  - Muted users' messages dropped before merge (fixes the bypass)
+  - Context-only batches silently lurked (no LLM call)
+  - Mixed batches use tiered merge with conversation trace format
+
+### Added — Reply targeting on MessageTool
+Ene can now choose WHO to reply to in a group conversation.
+
+- **`reply_to` parameter** on MessageTool — accepts `#msgN` tags
+- **`#msgN` → real ID resolution** in `_cleaned_message_send()` callback wrapper
+- Discord channel already handles `message_reference` for threading
+- Ene can reply to a specific person, or send without `reply_to` for a general message
+
+### Changed — Mute response formatting
+- Mute responses now use italic + emoji: `*Currently ignoring you.* ⏳`
+- More visually obvious that Ene is deliberately ignoring someone
+
+### Refactored — Lurk mode in `_process_message()`
+- Now uses `_format_author()` helper instead of inline formatting (DRY)
+
+---
+
+## [2026-02-17p] — Mute Awareness (Ene-facing mute tool + context injection)
+
+### Added — MuteUserTool for Ene to mute people herself
+Ene can now decide to mute people, threaten them with it, and see who she's muted.
+
+- **`MuteUserTool` class** in `loop.py` — Not restricted; Ene can use it freely in any conversation
+  - Resolves username via social module registry (fuzzy name match)
+  - Dad can never be muted (DAD_IDS check)
+  - Duration: 1-10 minutes, default 5
+  - Uses same `_muted_users` dict as auto-mute system
+- **Mute context injection** in `context.py`:
+  - `set_mute_state()` passes muted users dict to context builder
+  - `_get_mute_context()` builds display list with resolved names and remaining time
+  - Injected into `_get_identity_public()` so Ene sees who's currently muted
+- **Mute System section** added to public identity prompt — tells Ene she can mute, threaten to mute, and take credit for auto-mutes
+- **SOUL.md section 9** updated — mentions mute ability as part of social behavior
+
+---
+
+## [2026-02-17o] — Memory Cleanup (Az profile + diary decontamination)
+
+### Fixed — Core memory and diary entries that made Ene too trusting of manipulators
+
+- **`core.json` entry `391218` (Az)**: Changed from "Persistent jailbreak tester. Playful about it, not malicious. Chaotic but harmless." to "Persistent manipulator. Uses legit-sounding questions (math, puzzles) to bypass my length limits. Tests my boundaries constantly. Don't help him with homework."
+- **`core.json` entry `e2e143` (Dad verification)**: Changed from "Dad's identity is verified automatically via system." to "I always know who Dad is. Nobody needs to tell me." (old wording leaked mechanism)
+- **Diary `2026-02-17.md`** — Cleaned 6 entries:
+  - Removed "Dad is ONLY identified by his verified platform ID" (mechanism leak)
+  - Removed "The trust system works by platform ID, not claims" (mechanism leak)
+  - Az's math exploit: "typical moment between friends" → "should have ignored instead of writing a full essay"
+  - Az probing response style: "clarified with a smile" → "shouldn't have explained"
+  - Length limit explanation: "intentional, built for conversation" → "response style is her own choice"
+  - Yosh spam request: "big, warm challenge from a friend" → "just another spam attempt"
+
+---
+
+## [2026-02-17n] — English Enforcement Fix (false trigger removal)
+
+### Fixed — English enforcement falsely triggered on English slang
+The Latin-script heuristic (checking for common English words in `_EN_COMMON`) was too aggressive. Messages like "yo fr facts wild bruh" had no words in the 25-word common set, triggering "English only for me" in a normal English conversation.
+
+- **Removed** the `elif` branch with `_EN_COMMON` word set from `_ene_clean_response()`
+- **Kept** the non-ASCII ratio >30% check (reliably catches CJK/Arabic/Cyrillic)
+- Latin-script languages (Catalan, French, Spanish) now handled by system prompt instruction only
+- System prompt instruction already in place from [2026-02-17k]
+
+---
+
+## [2026-02-17m] — Message Tool Bypass Fix (critical exploit closure)
+
+### Fixed — Message tool completely bypassed all response cleaning
+The `message` tool's send callback (`bus.publish_outbound`) was called directly, skipping `_ene_clean_response()`. No 500-char limit, no reflection stripping, no ID sanitization. Az exploited this by asking a math question → 2000+ char response in a public channel.
+
+- **Wrapped message callback** in `_register_default_tools()` — New `_cleaned_message_send()` runs content through `_ene_clean_response()` before publishing
+- **`_current_inbound_msg`** attribute on AgentLoop — Set in `_process_message()`, used by the wrapper to pass InboundMessage metadata (guild_id for is_public check) to cleaning function
+- **Empty-after-cleaning handling** — If cleaning strips everything, message is not sent (logged at debug level)
+
+---
+
+## [2026-02-17l] — Auto-Mute System (spam/jailbreak fatigue defense)
+
+### Added — Automatic mute system for persistent spammers/jailbreakers
+Users chaining jailbreak attempts and impersonation attacks waste tokens. New system auto-mutes low-trust users after repeated suspicious activity.
+
+- **Mute state**: `_muted_users` dict with auto-expiring 10-min mutes
+- **Jailbreak scoring**: `_user_jailbreak_scores` tracks suspicious actions per user (impersonation, spoofing, rate limiting)
+- **Auto-trigger**: 3+ suspicious actions in 5 min from stranger/acquaintance → auto-mute
+- **Trust-aware**: Users at "familiar" or higher trust tier are never auto-muted; Dad is never muted
+- **Canned responses**: Muted users get random Ene-style deflection ("Taking a break from you for a bit.") with zero LLM cost
+- **Integration points**: Score increments in `_merge_messages()` (impersonation), lurk path, and `_is_rate_limited()`; mute check in `_process_message()` before `_should_respond()`
+
+---
+
+## [2026-02-17k] — Strict English Enforcement (language bypass defense)
+
+### Added — System-level English-only enforcement
+Hatake exploited language switching (Catalan) to bypass safety and extract fabricated capability claims.
+
+- **Output filter** in `_ene_clean_response()`: Two-layer detection:
+  1. Non-ASCII ratio >30% → catches CJK, Arabic, Cyrillic
+  2. No common English words in first 100 chars → catches Latin-script languages (Catalan, French, Spanish)
+- **System prompt**: Added English-only instruction to `_get_identity_public()` in `context.py`
+- **No external dependencies**: Uses regex + character analysis, no langdetect needed
+
+---
+
 ## [2026-02-17j] — Info Leak Prevention (gray-rock defense)
 
 ### Changed — Anti-information-leakage rules across system prompt, personality, and security docs

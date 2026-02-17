@@ -91,13 +91,23 @@ Discord User sends message
   run() — main message loop
   ├── Rate limit check (_is_rate_limited — 10 msgs/30s, Dad exempt)
   ├── Debounce buffer (3s per-channel batching, 10 msg cap)
-  │   ├── Smart trigger: person who mentioned Ene is the "trigger sender"
-  │   ├── Re-buffer if channel busy (1s retry, 15 msg cap)
-  │   └── Merge messages with author labels (DisplayName (@username) format)
+  │   ├── Per-message classification (_classify_message):
+  │   │   ├── DROP: muted users — silently removed
+  │   │   ├── RESPOND: Dad, mentions "ene", replies to Ene
+  │   │   └── CONTEXT: background chatter (visible but no response needed)
+  │   ├── Context-only batch → lurk all (no LLM call)
+  │   ├── Tiered merge (_merge_messages_tiered):
+  │   │   ├── [conversation trace] section with #msgN tags (RESPOND)
+  │   │   ├── [background] section (CONTEXT, last 5 only)
+  │   │   ├── Windowing: first 2 + last 10 for respond section
+  │   │   └── msg_id_map: #msgN → real Discord message ID
+  │   ├── Smart trigger: Dad > mentions Ene > last sender
+  │   └── Re-buffer if channel busy (1s retry, 15 msg cap)
   └── _process_message()
       ├── Set _current_caller_id (for tool permissions)
       ├── Set current sender on ModuleRegistry (for social context)
-      ├── _should_respond() — lurk or respond?
+      ├── Mute check — muted trigger sender → canned response (*italic + emoji*)
+      ├── _should_respond() — lurk or respond? (safety net for non-debounced paths)
       │   ├── Dad → always respond
       │   ├── DM → always respond
       │   ├── Contains "ene" → respond
@@ -122,10 +132,15 @@ Discord User sends message
         │
         ▼
 [Outbound Message Bus]
+  ├── Message tool path: _cleaned_message_send()
+  │   ├── Resolve #msgN → real Discord message ID (from msg_id_map)
+  │   ├── Apply _ene_clean_response()
+  │   └── Publish to bus
+  └── Direct path: reply_to = trigger message ID
         │
         ▼
 [Discord REST API]                 channels/discord.py
-  send() — POST to Discord with reply threading
+  send() — POST to Discord with reply threading (message_reference)
 ```
 
 ## Key Security Mechanisms
@@ -153,6 +168,14 @@ Non-Dad callers get "Access denied." for any restricted tool. This is enforced i
 ALLOWED_GUILD_IDS = {"1306235136400035911"}  # Dad's server only
 ```
 Messages from unauthorized Discord servers are silently dropped. DMs are unaffected (filtered by DM trust gate).
+
+### Mute System
+- **Manual mute**: Ene can mute users via `mute_user` tool (1-30 minutes)
+- **Auto-mute**: 3+ suspicious actions (impersonation, spoofing, rate limiting) in 5 min → 10 min mute
+- **Mute enforcement**: Per-message classification in `_flush_debounce()` drops muted users' messages before LLM sees them
+- **Mute responses**: Italic + emoji canned responses (no LLM call)
+- **Dad immunity**: DAD_IDS can never be muted
+- **Trust gate**: Auto-mute only targets stranger/acquaintance tier users
 
 ### Rate Limiting
 - Non-Dad users: 10 messages per 30 seconds (sliding window)

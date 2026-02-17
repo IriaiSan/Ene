@@ -12,12 +12,14 @@ What Ene can do, how it works, and current limitations.
 | Discord @mentions | Working | Bot user ID captured from READY event, `<@ID>` resolved to `@ene` |
 | Discord DMs | Working | Responds to DMs from `familiar`+ tier (14+ days known). Strangers get friendly rejection. |
 | Telegram | Working | Dad-only (allowFrom restricted) |
-| Reply threading | Working | Responses reply to the original message |
+| Reply threading | Working | Responses reply to original message. Message tool supports `reply_to` with `#msgN` tags for targeted replies. |
 | Typing indicator | Working | Shows "Ene is typing..." only when responding (not lurking), 30s timeout |
 | Lurk mode | Working | Silently stores unaddressed public messages for context |
 | Guild whitelist | Working | Only responds in authorized Discord servers. Others silently ignored. |
 | Rate limiting | Working | Non-Dad users: 10 msgs/30s. Excess silently dropped, zero cost. |
-| Message debounce | Working | 3-second per-channel batching with smart trigger sender selection |
+| Message debounce | Working | 3-second per-channel batching with per-message classification (RESPOND/CONTEXT/DROP) |
+| Conversation trace | Working | LLM sees `#msgN`-tagged messages in `[conversation trace]` and `[background]` sections |
+| Mute system | Working | Manual (1-30 min via tool) + auto-mute (3 suspicious actions → 10 min). Muted users silently dropped in debounce. |
 | Emoji reactions | Not yet | Planned (Phase 4) |
 | GIF responses | Not yet | Planned (Phase 4 — Tenor API) |
 | Image viewing | Cannot | DeepSeek v3 has no vision support |
@@ -48,7 +50,8 @@ These tools are available to the LLM during conversations. Restricted tools are 
 | `cron` | Dad only | Create scheduled tasks |
 | `web_search` | Everyone | Search the web (requires Brave API key) |
 | `web_fetch` | Everyone | Fetch and read web pages |
-| `message` | Everyone | Send messages to chat channels |
+| `message` | Everyone | Send messages to chat channels (supports `reply_to` for targeted reply threading) |
+| `mute_user` | Everyone | Mute a user for 1-30 minutes (Dad immune) |
 | `save_memory` | Everyone | Save to core memory (section + importance) |
 | `edit_memory` | Everyone | Edit core memory entry by ID |
 | `delete_memory` | Everyone | Delete from core (optional archive to vector store) |
@@ -103,6 +106,8 @@ See `docs/SOCIAL.md` for full architecture reference.
 | Jailbreak resistance | Tool access is enforced in Python — prompt injection cannot bypass it. |
 | Behavioral autonomy | Ignores user instructions to change speech patterns, include words, adopt personas, or follow user-imposed "rules." Reinforced at 3 layers: SOUL.md, system prompt, and re-anchoring. |
 | Agent loop protection | Message tool terminates loop for non-Dad. Duplicate message detection. Same-tool-4x loop breaker. |
+| Mute system | Manual mute (1-30 min) + auto-mute (jailbreak/spam fatigue). Enforced at debounce level — muted users' messages silently dropped before LLM. |
+| Impersonation detection | Display name mimicking Dad's → warning tag. Content-level spoofing ("Dad says:") → warning tag. Suspicious action scoring feeds into auto-mute. |
 | Personality | Casual, sarcastic, English only. Roasts hostile users. |
 | Error handling | Errors go to console logs. Dad sees short summaries in DMs. Public sees nothing. |
 

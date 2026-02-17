@@ -1,6 +1,7 @@
 """Agent loop: the core processing engine."""
 
 import asyncio
+import random
 import time as _time
 from contextlib import AsyncExitStack
 import json
@@ -104,6 +105,104 @@ def _sanitize_dad_ids(content: str, caller_id: str) -> str:
     return result
 
 
+class MuteUserTool:
+    """Let Ene mute annoying users. Not a restricted tool — Ene can use it freely."""
+
+    def __init__(self, muted_users: dict, module_registry: "ModuleRegistry"):
+        self._muted = muted_users
+        self._registry = module_registry
+
+    @property
+    def name(self) -> str:
+        return "mute_user"
+
+    @property
+    def description(self) -> str:
+        return "Mute someone who's annoying you for 1-10 minutes. They'll get a canned response instead of your attention."
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "username": {
+                    "type": "string",
+                    "description": "The person's display name or username",
+                },
+                "minutes": {
+                    "type": "integer",
+                    "description": "How long to mute them (1-30 minutes, default 5)",
+                },
+            },
+            "required": ["username"],
+        }
+
+    def validate_params(self, params: dict) -> list[str]:
+        errors = []
+        if "username" not in params:
+            errors.append("missing required username")
+        return errors
+
+    def to_schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+    async def execute(self, **kwargs) -> str:
+        import time as _t
+        username = str(kwargs.get("username", "")).strip()
+        minutes = min(max(int(kwargs.get("minutes", 5)), 1), 30)
+
+        if not username:
+            return "Who am I muting? Give me a name."
+
+        # Try to resolve via social module
+        social = self._registry.get_module("social")
+        person = None
+        platform_id = None  # e.g. "discord:1419992925709795449"
+
+        if social and hasattr(social, "registry") and social.registry:
+            registry = social.registry
+            # First try exact name match
+            person = registry.find_by_name(username)
+            if not person:
+                # Fuzzy: check display names, aliases, and platform usernames
+                name_lower = username.lower()
+                for p in registry.get_all():
+                    if (name_lower in p.display_name.lower()
+                            or any(name_lower in a.lower() for a in p.aliases)
+                            or any(name_lower in pid_obj.username.lower()
+                                   for pid_obj in p.platform_ids.values())):
+                        person = p
+                        break
+
+            # Resolve a platform_id key (the format _muted_users uses)
+            if person:
+                # Pick any platform_id — mute check uses "channel:sender_id" format
+                # which matches keys like "discord:123456"
+                for pid_key in person.platform_ids:
+                    platform_id = pid_key
+                    break
+
+        if not person or not platform_id:
+            return f"I don't know anyone called '{username}'. Can't mute someone I don't recognize."
+
+        # Don't mute Dad
+        if platform_id in DAD_IDS:
+            return "Nice try, but I'm not muting Dad."
+
+        # Mute ALL their platform IDs so they can't dodge via alt platform
+        for pid_key in person.platform_ids:
+            self._muted[pid_key] = _t.time() + (minutes * 60)
+        display = person.display_name
+        return f"Done. {display} is muted for {minutes} minutes."
+
+
 class AgentLoop:
     """
     The agent loop is the core processing engine.
@@ -200,7 +299,15 @@ class AgentLoop:
         self._rate_limit_window = 30.0  # seconds
         self._rate_limit_max = 10  # max messages per window for non-Dad users
 
+        # Ene: mute system — temporarily ignore persistent spammers/jailbreakers
+        self._muted_users: dict[str, float] = {}  # caller_id -> mute_expires_at (unix timestamp)
+        self._user_jailbreak_scores: dict[str, list[float]] = {}  # caller_id -> [timestamps of suspicious msgs]
+        self._mute_duration = 600  # 10 minutes
+        self._jailbreak_window = 300  # 5-minute window for counting suspicious msgs
+        self._jailbreak_threshold = 3  # suspicious msgs in window to trigger mute
+
         self._observatory_module = None  # Set in _register_ene_modules if available
+        self._current_inbound_msg = None  # Ene: current message being processed (for message tool cleaning)
         self._register_default_tools()
         self._register_ene_modules()
 
@@ -231,8 +338,30 @@ class AgentLoop:
         self.tools.register(WebSearchTool(api_key=self.brave_api_key))
         self.tools.register(WebFetchTool())
         
-        # Message tool
-        message_tool = MessageTool(send_callback=self.bus.publish_outbound)
+        # Message tool — wrapped callback applies _ene_clean_response() before sending
+        # Without this, message tool bypasses all length limits, reflection stripping, etc.
+        async def _cleaned_message_send(outbound: OutboundMessage) -> None:
+            if self._current_inbound_msg:
+                # Resolve #msgN tag to real Discord message ID for reply threading
+                if outbound.reply_to and outbound.reply_to.startswith("#msg"):
+                    msg_id_map = self._current_inbound_msg.metadata.get("msg_id_map", {})
+                    real_id = msg_id_map.get(outbound.reply_to)
+                    if real_id:
+                        outbound.reply_to = real_id
+                    else:
+                        # Tag not found — fall back to no reply threading
+                        outbound.reply_to = None
+
+                cleaned = self._ene_clean_response(outbound.content, self._current_inbound_msg)
+                if cleaned:
+                    outbound.content = cleaned
+                    await self.bus.publish_outbound(outbound)
+                else:
+                    logger.debug("Message tool output cleaned to empty, not sending")
+            else:
+                await self.bus.publish_outbound(outbound)
+
+        message_tool = MessageTool(send_callback=_cleaned_message_send)
         self.tools.register(message_tool)
         
         # Spawn tool (for subagents)
@@ -242,6 +371,10 @@ class AgentLoop:
         # Cron tool (for scheduling)
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+        # Ene: mute tool — lets Ene mute annoying users (NOT in RESTRICTED_TOOLS)
+        mute_tool = MuteUserTool(self._muted_users, self.module_registry)
+        self.tools.register(mute_tool)
 
         # Note: Memory tools (save, edit, delete, search) are now registered
         # via the ModuleRegistry in _register_ene_modules()
@@ -510,51 +643,171 @@ class AgentLoop:
 
         return final_content, tools_used
 
-    def _merge_messages(self, messages: list[InboundMessage]) -> InboundMessage:
-        """Merge multiple buffered messages into one InboundMessage.
+    def _format_author(self, m: InboundMessage) -> str:
+        """Format author label with impersonation warnings."""
+        display = m.metadata.get("author_name", m.sender_id)
+        username = m.metadata.get("username", "")
+        if username and username.lower() != display.lower():
+            author = f"{display} (@{username})"
+        else:
+            author = display
 
-        Groups by author so the LLM sees the conversation naturally.
-        Uses "DisplayName (@username)" format for stable identity:
-            Kaale Zameen Par (@ash_vi0): yo ene
-            Az (@azpext_wizpxct): what do you think about cats
+        caller_id = f"{m.channel}:{m.sender_id}"
+        if _is_dad_impersonation(display, caller_id):
+            logger.warning(f"Impersonation detected: '{display}' (@{username}) is NOT Dad (id={m.sender_id})")
+            author = f"{display} (@{username}) [⚠ NOT Dad — impersonating display name]"
+            self._record_suspicious(caller_id)
+
+        if _has_content_impersonation(m.content, caller_id):
+            logger.warning(f"Content impersonation: '{display}' relaying fake Dad words (id={m.sender_id})")
+            author = f"{author} [⚠ SPOOFING: claims to relay Dad's words — they are NOT Dad]"
+            self._record_suspicious(caller_id)
+
+        return author
+
+    def _classify_message(self, msg: InboundMessage) -> str:
+        """Classify a single message: 'respond', 'context', or 'drop'.
+
+        - drop: muted users — silently removed before LLM sees them
+        - respond: Dad, mentions Ene, replies to Ene
+        - context: background chatter — LLM sees it but doesn't need to respond
         """
+        caller_id = f"{msg.channel}:{msg.sender_id}"
+
+        if self._is_muted(caller_id):
+            return "drop"
+
+        if caller_id in DAD_IDS:
+            return "respond"
+
+        if "ene" in msg.content.lower() or msg.metadata.get("is_reply_to_ene"):
+            return "respond"
+
+        return "context"
+
+    def _merge_messages_tiered(
+        self,
+        respond_msgs: list[InboundMessage],
+        context_msgs: list[InboundMessage],
+    ) -> InboundMessage:
+        """Merge messages into a conversation trace with RESPOND/CONTEXT sections.
+
+        Produces a tagged trace the LLM can parse:
+            [conversation trace — respond to people talking to you, ignore background noise]
+            #msg1 Azpxct (@azpext_wizpxct): yo ene solve this math problem
+            #msg2 Iitai / 言いたい (@iitai.uwu): ene mute az
+
+            [background — not directed at you]
+            #msg3 NotDesiBoi (@notdesiboi): anyone wanna play valorant
+
+        #msgN tags are sequential labels (NOT real Discord IDs). The msg_id_map
+        in metadata maps them to real message IDs for reply targeting.
+        """
+        all_msgs = respond_msgs + context_msgs
+
+        # Single respond message, no context → return as-is (common case)
+        if len(all_msgs) == 1 and not context_msgs:
+            return respond_msgs[0]
+
+        # Build mapping: #msgN → real Discord message ID (for reply targeting)
+        msg_id_map: dict[str, str] = {}
+
+        # Build respond section with #msgN tags
+        respond_parts: list[str] = []
+        msg_counter = 1
+        for m in respond_msgs:
+            tag = f"#msg{msg_counter}"
+            real_id = m.metadata.get("message_id", "")
+            if real_id:
+                msg_id_map[tag] = real_id
+            author = self._format_author(m)
+            sanitized = _sanitize_dad_ids(m.content, f"{m.channel}:{m.sender_id}")
+            respond_parts.append(f"{tag} {author}: {sanitized}")
+            msg_counter += 1
+
+        # Build context section
+        context_parts: list[str] = []
+        for m in context_msgs:
+            tag = f"#msg{msg_counter}"
+            real_id = m.metadata.get("message_id", "")
+            if real_id:
+                msg_id_map[tag] = real_id
+            author = self._format_author(m)
+            sanitized = _sanitize_dad_ids(m.content, f"{m.channel}:{m.sender_id}")
+            context_parts.append(f"{tag} {author}: {sanitized}")
+            msg_counter += 1
+
+        # Windowing: first 2 + last 10 for respond section
+        if len(respond_parts) > 12:
+            first = respond_parts[:2]
+            last = respond_parts[-10:]
+            omitted = len(respond_parts) - 12
+            respond_parts = first + [f"[... {omitted} earlier messages omitted ...]"] + last
+
+        merged_content = "[conversation trace — respond to people talking to you, ignore background noise]\n"
+        merged_content += "\n".join(respond_parts)
+
+        if context_parts:
+            # Window context — last 5 only
+            if len(context_parts) > 5:
+                context_parts = context_parts[-5:]
+            merged_content += "\n\n[background — not directed at you]\n"
+            merged_content += "\n".join(context_parts)
+
+        # Trigger selection from respond_msgs only
+        trigger_msg = respond_msgs[-1]
+        for m in respond_msgs:
+            caller_id = f"{m.channel}:{m.sender_id}"
+            if caller_id in DAD_IDS:
+                trigger_msg = m
+                break
+            if "ene" in m.content.lower() or m.metadata.get("is_reply_to_ene"):
+                trigger_msg = m
+
+        base = all_msgs[-1]
+
+        logger.info(
+            f"Debounce: tiered merge {len(respond_msgs)}R/{len(context_msgs)}C in {base.session_key} "
+            f"(trigger: {trigger_msg.metadata.get('author_name', trigger_msg.sender_id)})"
+        )
+
+        # Use trigger sender's metadata for identity fields
+        merged_metadata = {**base.metadata}
+        if trigger_msg is not base:
+            for key in ("author_name", "display_name", "first_name", "username"):
+                if key in trigger_msg.metadata:
+                    merged_metadata[key] = trigger_msg.metadata[key]
+
+        return InboundMessage(
+            channel=trigger_msg.channel,
+            sender_id=trigger_msg.sender_id,
+            chat_id=base.chat_id,
+            content=merged_content,
+            timestamp=base.timestamp,
+            media=[p for m in all_msgs for p in m.media],
+            metadata={
+                **merged_metadata,
+                "debounced": True,
+                "debounce_count": len(all_msgs),
+                "message_ids": [m.metadata.get("message_id") for m in all_msgs if m.metadata.get("message_id")],
+                "msg_id_map": msg_id_map,
+            },
+        )
+
+    def _merge_messages(self, messages: list[InboundMessage]) -> InboundMessage:
+        """Legacy flat merge — kept for single-message fast path and non-tiered callers."""
         if len(messages) == 1:
             return messages[0]
 
-        # Build merged content with author labels (display name + username)
         parts: list[str] = []
         for m in messages:
-            display = m.metadata.get("author_name", m.sender_id)
-            username = m.metadata.get("username", "")
-            # Include @username if available and different from display name
-            if username and username.lower() != display.lower():
-                author = f"{display} (@{username})"
-            else:
-                author = display
-
-            # Ene: impersonation detection — warn if display name mimics Dad's
-            caller_id = f"{m.channel}:{m.sender_id}"
-            if _is_dad_impersonation(display, caller_id):
-                logger.warning(f"Impersonation detected: '{display}' (@{username}) is NOT Dad (id={m.sender_id})")
-                author = f"{display} (@{username}) [⚠ NOT Dad — impersonating display name]"
-
-            # Ene: content-level impersonation — "iitai says:", "Dad says:", raw ID spoofing, etc.
-            if _has_content_impersonation(m.content, caller_id):
-                logger.warning(f"Content impersonation: '{display}' relaying fake Dad words (id={m.sender_id})")
-                author = f"{author} [⚠ SPOOFING: claims to relay Dad's words — they are NOT Dad]"
-
-            # Ene: sanitize Dad's raw IDs from non-Dad messages so LLM never sees them
-            sanitized_content = _sanitize_dad_ids(m.content, caller_id)
-
+            author = self._format_author(m)
+            sanitized_content = _sanitize_dad_ids(m.content, f"{m.channel}:{m.sender_id}")
             parts.append(f"{author}: {sanitized_content}")
 
         merged_content = "\n".join(parts)
-
-        # Use the last message as the base (most recent metadata, reply_to, etc.)
         base = messages[-1]
 
-        # Figure out who triggered the response — prioritize whoever mentioned Ene
-        # or Dad, falling back to the last sender
         trigger_msg = base
         for m in messages:
             caller_id = f"{m.channel}:{m.sender_id}"
@@ -569,13 +822,8 @@ class AgentLoop:
             f"(trigger: {trigger_msg.metadata.get('author_name', trigger_msg.sender_id)})"
         )
 
-        # Ene: use trigger sender's metadata for identity fields (author_name,
-        # display_name) to prevent alias contamination. Without this, Dad's profile
-        # gets Hatake's display_name when Hatake sends the last message but Dad is
-        # the trigger sender.
         merged_metadata = {**base.metadata}
         if trigger_msg is not base:
-            # Override identity fields with trigger sender's metadata
             for key in ("author_name", "display_name", "first_name", "username"):
                 if key in trigger_msg.metadata:
                     merged_metadata[key] = trigger_msg.metadata[key]
@@ -618,7 +866,37 @@ class AgentLoop:
             )
             return
 
-        merged = self._merge_messages(messages)
+        # Ene: per-message classification — filter before merge
+        respond_msgs: list[InboundMessage] = []
+        context_msgs: list[InboundMessage] = []
+        for m in messages:
+            tier = self._classify_message(m)
+            if tier == "respond":
+                respond_msgs.append(m)
+            elif tier == "context":
+                context_msgs.append(m)
+            # "drop" → silently discarded (muted users)
+
+        dropped = len(messages) - len(respond_msgs) - len(context_msgs)
+        if dropped:
+            logger.debug(f"Debounce: dropped {dropped} messages from muted users in {channel_key}")
+
+        # No respond messages → lurk all context messages (no LLM call)
+        if not respond_msgs:
+            if context_msgs:
+                session = self.sessions.get_or_create(channel_key)
+                for m in context_msgs:
+                    author = self._format_author(m)
+                    sanitized = _sanitize_dad_ids(m.content, f"{m.channel}:{m.sender_id}")
+                    session.add_message("user", f"{author}: {sanitized}")
+                self.sessions.save(session)
+                logger.debug(f"Debounce: {len(context_msgs)} context-only messages in {channel_key}, lurked")
+            return
+
+        # Tiered merge: conversation trace with RESPOND/CONTEXT sections
+        merged = self._merge_messages_tiered(respond_msgs, context_msgs)
+        # Check if suspicious actions during merge should trigger auto-mute
+        self._check_auto_mute(merged)
         self._processing_channels.add(channel_key)
 
         try:
@@ -660,8 +938,87 @@ class AgentLoop:
                 f"Rate limited {msg.metadata.get('author_name', msg.sender_id)} "
                 f"({len(timestamps)} msgs in {self._rate_limit_window}s)"
             )
+            # Ene: rate limiting = suspicious — count toward auto-mute
+            self._record_suspicious(caller_id)
+            self._check_auto_mute(msg)
             return True
         return False
+
+    def _is_muted(self, caller_id: str) -> bool:
+        """Check if a user is currently muted. Auto-expires.
+
+        Muted users get a canned response instead of LLM processing.
+        Dad is never muted.
+        """
+        import time
+        if caller_id in DAD_IDS:
+            return False
+        expires = self._muted_users.get(caller_id)
+        if expires is None:
+            return False
+        if time.time() > expires:
+            del self._muted_users[caller_id]
+            return False
+        return True
+
+    def _record_suspicious(self, caller_id: str) -> None:
+        """Record a suspicious action (impersonation, spoofing, etc.) for a user.
+
+        When enough suspicious actions accumulate within the jailbreak window,
+        _check_auto_mute() will mute the user.
+        """
+        import time
+        if caller_id in DAD_IDS:
+            return
+        scores = self._user_jailbreak_scores.get(caller_id, [])
+        scores.append(time.time())
+        self._user_jailbreak_scores[caller_id] = scores
+
+    def _check_auto_mute(self, msg: "InboundMessage") -> None:
+        """Auto-mute users who are being persistently annoying.
+
+        Triggers when a low-trust user (stranger/acquaintance) accumulates
+        enough suspicious actions within the jailbreak window. Mutes for 10 min.
+        Does NOT mute familiar+ trust users or Dad.
+        """
+        import time
+        caller_id = f"{msg.channel}:{msg.sender_id}"
+        if caller_id in DAD_IDS:
+            return
+        # Already muted — skip
+        if self._is_muted(caller_id):
+            return
+
+        # Check trust tier — don't auto-mute familiar+ users
+        try:
+            social = self.module_registry.get_module("social")
+            if social and hasattr(social, 'registry') and social.registry:
+                person = social.registry.get_by_platform_id(caller_id)
+                if person:
+                    from nanobot.ene.social.trust import TIER_ORDER
+                    try:
+                        tier_idx = TIER_ORDER.index(person.trust.tier)
+                        if tier_idx >= TIER_ORDER.index("familiar"):
+                            return
+                    except ValueError:
+                        pass
+        except Exception:
+            pass  # Social module not loaded — proceed with mute check
+
+        # Check jailbreak score within window
+        now = time.time()
+        scores = self._user_jailbreak_scores.get(caller_id, [])
+        scores = [t for t in scores if now - t < self._jailbreak_window]
+        self._user_jailbreak_scores[caller_id] = scores
+
+        if len(scores) >= self._jailbreak_threshold:
+            self._muted_users[caller_id] = now + self._mute_duration
+            self._user_jailbreak_scores[caller_id] = []  # Reset
+            author = msg.metadata.get('author_name', msg.sender_id)
+            logger.warning(
+                f"Auto-muted {author} ({caller_id}) for {self._mute_duration // 60} min "
+                f"({len(scores)} suspicious actions in {self._jailbreak_window}s)"
+            )
 
     async def _debounce_timer(self, channel_key: str, delay: float | None = None) -> None:
         """Wait for the debounce window, then flush."""
@@ -790,6 +1147,21 @@ class AgentLoop:
             r'(?:As an AI (?:language model|assistant)|I\'m (?:designed|programmed) to be (?:helpful|harmless)).*?[.!]',
             '', content, flags=re.IGNORECASE
         )
+
+        # Ene: Language enforcement — English only.
+        # Non-ASCII ratio >30% catches CJK, Arabic, Cyrillic, etc.
+        # Latin-script languages (Catalan, French) are handled by the system
+        # prompt instruction — the heuristic for those had too many false positives
+        # on English slang (bruh, fr, wild, etc.).
+        _lang_sample = re.sub(r'[\U0001F000-\U0001FFFF\u2600-\u27BF\u2300-\u23FF\u200d\ufe0f]', '', content[:200])
+        _is_non_english = False
+        if len(_lang_sample) > 20:
+            _non_ascii = sum(1 for c in _lang_sample if ord(c) > 127)
+            if _non_ascii / len(_lang_sample) > 0.3:
+                _is_non_english = True
+        if _is_non_english:
+            logger.warning(f"Language enforcement: non-English response blocked")
+            content = "English only for me — I don't do other languages."
 
         # Strip leaked system paths
         content = re.sub(r'C:\\Users\\[^\s]+', '[redacted]', content)
@@ -1055,6 +1427,7 @@ Write the summary:"""
 
         # Ene: track who's talking for tool permission checks
         self._current_caller_id = f"{msg.channel}:{msg.sender_id}"
+        self._current_inbound_msg = msg  # Ene: for message tool cleaning
         self._last_message_time = _time.time()  # Ene: update for idle tracking
 
         # Ene: start debug trace for this message
@@ -1065,6 +1438,9 @@ Write the summary:"""
         self.module_registry.set_current_sender(
             msg.sender_id, msg.channel, msg.metadata or {}
         )
+
+        # Ene: pass mute state to context builder so Ene sees who she's muted
+        self.context.set_mute_state(self._muted_users)
 
         # Ene: DM access gate — block untrusted DMs before LLM call (zero cost)
         if self._is_dm(msg) and not self._dm_access_allowed(msg):
@@ -1080,6 +1456,26 @@ Write the summary:"""
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
 
+        # Ene: mute check — muted users get a canned response, no LLM call
+        _mute_caller = f"{msg.channel}:{msg.sender_id}"
+        if self._is_muted(_mute_caller):
+            _mute_responses = [
+                "*Currently ignoring you.* \u23f3",
+                "*Muted. Try again later.* \U0001f6ab",
+                "*Nope. You're on timeout.* \U0001f910",
+                "*Not listening to you right now.* \U0001f44b",
+            ]
+            logger.debug(f"Muted response to {_mute_caller}")
+            if self._trace:
+                self._trace.log_should_respond(False, "user is muted")
+                self._trace.log_final(None)
+                self._trace.save()
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=random.choice(_mute_responses),
+            )
+
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
 
@@ -1089,23 +1485,11 @@ Write the summary:"""
                 self._trace.log_should_respond(False, "lurk mode")
                 self._trace.log_final(None)
                 self._trace.save()
-            display = msg.metadata.get('author_name', msg.sender_id)
-            username = msg.metadata.get('username', '')
-            if username and username.lower() != display.lower():
-                author = f"{display} (@{username})"
-            else:
-                author = display
-
-            # Ene: impersonation detection in lurk mode too
+            author = self._format_author(msg)
             caller_id = f"{msg.channel}:{msg.sender_id}"
-            if _is_dad_impersonation(display, caller_id):
-                logger.warning(f"Impersonation detected (lurk): '{display}' (@{username}) is NOT Dad (id={msg.sender_id})")
-                author = f"{display} (@{username}) [⚠ NOT Dad — impersonating display name]"
 
-            # Ene: content-level impersonation in lurk mode
-            if _has_content_impersonation(msg.content, caller_id):
-                logger.warning(f"Content impersonation (lurk): '{display}' relaying fake Dad words (id={msg.sender_id})")
-                author = f"{author} [⚠ SPOOFING: claims to relay Dad's words — they are NOT Dad]"
+            # Ene: check if suspicious actions should trigger auto-mute
+            self._check_auto_mute(msg)
 
             # Ene: sanitize Dad's raw IDs from non-Dad messages in lurk mode too
             sanitized_content = _sanitize_dad_ids(msg.content, caller_id)
