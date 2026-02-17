@@ -4,6 +4,16 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-18h] — Ene-Signal Hard Override + Daemon Logging
+
+### Fixed — Daemon Misclassifying Obvious "ene" Mentions as CONTEXT
+- Free daemon models sometimes return "context" for messages that literally say "ene"
+- Added hard override: if message contains "ene" (word-boundary) or is a reply to Ene, force RESPOND regardless of daemon output
+- Daemon classification still used for everything else — override only fires for clear Ene signals
+- Added per-message daemon classification logging for debugging
+
+---
+
 ## [2026-02-18g] — Dad-Alone Promotion
 
 ### Fixed — Dad Messages Lurked When Alone

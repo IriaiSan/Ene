@@ -998,6 +998,12 @@ class AgentLoop:
                     )
                     # Store daemon result on message metadata for context injection
                     m.metadata["_daemon_result"] = daemon_result
+                    _sender_label = m.metadata.get("author_name", m.sender_id)
+                    logger.debug(
+                        f"Daemon: {_sender_label} → {daemon_result.classification.value} "
+                        f"({'fallback' if daemon_result.fallback_used else daemon_result.model_used}) "
+                        f"[{daemon_result.classification_reason or 'no reason'}]"
+                    )
 
                     # Auto-mute on high-severity security flags (never mute Dad)
                     if daemon_result.should_auto_mute and not is_dad:
@@ -1007,8 +1013,20 @@ class AgentLoop:
                         self._muted_users[caller_id] = _mute_time.time() + 1800  # 30 minutes
                         continue
 
-                    # Use daemon classification (Dad is never dropped)
-                    if daemon_result.classification.value == "respond":
+                    # Hard override: if message mentions Ene by name or is a reply
+                    # to Ene, force RESPOND regardless of daemon output. Free models
+                    # sometimes misclassify obvious mentions as CONTEXT.
+                    has_ene_signal = (
+                        bool(_ENE_PATTERN.search(m.content))
+                        or m.metadata.get("is_reply_to_ene")
+                    )
+                    if has_ene_signal and daemon_result.classification.value != "respond":
+                        logger.debug(
+                            f"Daemon override: {daemon_result.classification.value} → respond "
+                            f"(Ene signal in message from {m.metadata.get('author_name', m.sender_id)})"
+                        )
+                        respond_msgs.append(m)
+                    elif daemon_result.classification.value == "respond":
                         respond_msgs.append(m)
                     elif daemon_result.classification.value == "drop" and not is_dad:
                         continue  # Silently dropped (safety: never drop Dad)
