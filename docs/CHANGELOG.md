@@ -4,6 +4,20 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-18j] — Thread Replay Fix + Watchdog Disabled
+
+### Fixed — Thread Context Re-Replaying Entire History Every Batch
+- **Root cause**: `build_threaded_context()` included ALL messages from ALL active threads every time a new message arrived. Ene saw the same thread history duplicated across turns, causing her to re-respond to old messages ("Morning, Dad" repeated, same memories saved 3x, etc.)
+- **Fix**: Added `last_shown_index` to Thread model. Tracks how many messages Ene already saw. On follow-up turns, formatter only shows NEW messages since last response with a brief "continued" header. Threads with no new messages are skipped entirely.
+- Files: `conversation/models.py` (new field + serialization), `conversation/formatter.py` (follow-up mode in `_format_ene_thread`), `conversation/tracker.py` (`build_context` marks dirty)
+
+### Changed — Watchdog Module Disabled
+- Watchdog disabled to save money while free model rotation is being battle-tested
+- Module registration commented out in loop.py, observatory wiring removed
+- Kept as TODO for later re-enablement
+
+---
+
 ## [2026-02-18i] — Updated Daemon Free Models + Kill openrouter/auto
 
 ### Fixed — Removed openrouter/auto Fallback (was routing to expensive paid models)

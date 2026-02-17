@@ -450,10 +450,11 @@ class AgentLoop:
             self._observatory_module = ObservatoryModule()
             self.module_registry.register(self._observatory_module)
 
-            # Register Watchdog Module (Module 4: periodic self-integrity audits)
-            from nanobot.ene.watchdog import WatchdogModule
-            watchdog_module = WatchdogModule()
-            self.module_registry.register(watchdog_module)
+            # Watchdog Module (Module 4) — DISABLED for now to save costs.
+            # TODO: re-enable when free model rotation is battle-tested.
+            # from nanobot.ene.watchdog import WatchdogModule
+            # watchdog_module = WatchdogModule()
+            # self.module_registry.register(watchdog_module)
 
             # Register Conversation Tracker Module (Module 5: thread detection)
             from nanobot.ene.conversation import ConversationTrackerModule
@@ -497,11 +498,7 @@ class AgentLoop:
         if obs_mod:
             collector = getattr(obs_mod, "collector", None)
             if collector:
-                # Wire to watchdog auditor
-                wd_mod = self.module_registry.get_module("watchdog")
-                if wd_mod and hasattr(wd_mod, "_auditor") and wd_mod._auditor:
-                    wd_mod._auditor._observatory = collector
-                    logger.debug("Wired observatory → watchdog")
+                # Watchdog wiring disabled (module disabled to save costs)
                 # Wire to daemon processor
                 daemon_mod = self.module_registry.get_module("daemon")
                 if daemon_mod and hasattr(daemon_mod, "processor") and daemon_mod.processor:

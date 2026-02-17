@@ -78,8 +78,13 @@ def _format_ene_thread(
     msg_id_map: dict[str, str],
     now: float | None = None,
 ) -> tuple[list[str], int]:
-    """Format an Ene-involved thread with first+gap+last windowing.
+    """Format an Ene-involved thread.
 
+    Two modes:
+    - First time (last_shown_index==0): full first+gap+last windowing
+    - Follow-up (last_shown_index>0): only NEW messages since Ene last responded
+
+    This prevents re-replaying the entire thread history every batch.
     Returns (lines, next_counter).
     """
     now = now or time.time()
@@ -98,6 +103,24 @@ def _format_ene_thread(
             participant_names.append(name)
             seen.add(name)
 
+    # ── Follow-up mode: only show new messages since last response ──
+    new_msgs = thread.messages[thread.last_shown_index:]
+    if thread.last_shown_index > 0:
+        if not new_msgs:
+            # Thread already fully shown, no new messages — skip entirely
+            return lines, msg_counter
+        already = thread.last_shown_index
+        lines.append(
+            f"--- Thread (continued, {len(new_msgs)} new): "
+            f"{already} earlier messages already in your history ---"
+        )
+        lines.append(f"Participants: {', '.join(participant_names)}")
+        for tm in new_msgs:
+            line, msg_counter = _format_thread_message(tm, msg_counter, msg_id_map)
+            lines.append(line)
+        return lines, msg_counter
+
+    # ── First time: full windowing ──────────────────────────────────
     lines.append(f"--- Thread: started {age}, {count} messages ({state}) ---")
     lines.append(f"Participants: {', '.join(participant_names)}")
 
@@ -241,12 +264,14 @@ def build_threaded_context(
     parts: list[str] = []
 
     # ── Ene threads section ──────────────────────────────────────
+    displayed_ene_threads: list[Thread] = []
     if ene_threads:
         parts.append("[active conversations — you are part of these threads]\n")
         for t in ene_threads[:ENE_THREAD_MAX_DISPLAY]:
             lines, msg_counter = _format_ene_thread(t, msg_counter, msg_id_map, now)
             parts.extend(lines)
             parts.append("")  # Blank line between threads
+            displayed_ene_threads.append(t)
 
         if len(ene_threads) > ENE_THREAD_MAX_DISPLAY:
             omitted = len(ene_threads) - ENE_THREAD_MAX_DISPLAY
@@ -301,6 +326,10 @@ def build_threaded_context(
                 msg_counter += 1
 
     merged_content = "\n".join(parts).strip()
+
+    # ── Mark threads as shown so follow-up turns only show NEW messages ──
+    for t in displayed_ene_threads:
+        t.last_shown_index = len(t.messages)
 
     # ── Build the InboundMessage ─────────────────────────────────
     trigger_msg = _select_trigger(respond_msgs, context_msgs)

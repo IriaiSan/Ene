@@ -120,6 +120,12 @@ class Thread:
     messages: list[ThreadMessage] = field(default_factory=list)
     topic_keywords: list[str] = field(default_factory=list)
 
+    # Index into messages[] — messages[:last_shown_index] were already
+    # displayed to Ene in a previous turn. The formatter uses this to
+    # show only NEW messages on follow-up turns (avoids re-replaying
+    # the same thread history every batch).
+    last_shown_index: int = 0
+
     parent_thread_id: str | None = None         # Split parent
     child_thread_ids: list[str] = field(default_factory=list)
 
@@ -188,6 +194,7 @@ class Thread:
             "ene_involved": self.ene_involved,
             "messages": [m.to_dict() for m in self.messages],
             "topic_keywords": self.topic_keywords,
+            "last_shown_index": self.last_shown_index,
             "parent_thread_id": self.parent_thread_id,
             "child_thread_ids": self.child_thread_ids,
             "discord_msg_ids": list(self.discord_msg_ids),
@@ -206,6 +213,7 @@ class Thread:
             ene_involved=d.get("ene_involved", False),
             messages=[ThreadMessage.from_dict(m) for m in d.get("messages", [])],
             topic_keywords=d.get("topic_keywords", []),
+            last_shown_index=d.get("last_shown_index", 0),
             parent_thread_id=d.get("parent_thread_id"),
             child_thread_ids=d.get("child_thread_ids", []),
             discord_msg_ids=set(d.get("discord_msg_ids", [])),

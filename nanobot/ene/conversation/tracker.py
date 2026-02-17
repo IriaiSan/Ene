@@ -448,8 +448,11 @@ class ConversationTracker:
 
         Replaces _merge_messages_tiered(). Returns an InboundMessage
         with the same metadata contract (msg_id_map, debounced, etc.).
+
+        Side effect: updates last_shown_index on displayed threads so
+        follow-up turns only show NEW messages (avoids re-replay).
         """
-        return build_threaded_context(
+        result = build_threaded_context(
             threads=self._threads,
             pending=self._pending,
             respond_msgs=respond_msgs,
@@ -457,6 +460,9 @@ class ConversationTracker:
             channel_key=channel_key,
             format_author_fn=format_author_fn,
         )
+        # build_threaded_context mutates last_shown_index on displayed threads
+        self._dirty = True
+        return result
 
     def mark_ene_responded(self, msg: InboundMessage) -> None:
         """Record that Ene sent a response in the relevant thread(s).
