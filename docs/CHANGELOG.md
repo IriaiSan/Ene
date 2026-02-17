@@ -4,6 +4,28 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-18d] — Debounce Queue + Dad Daemon Filtering + Session Sanitization
+
+### Changed — Debounce Queue System
+Replaced the re-buffer + exponential backoff debounce with a proper queue system:
+- **Dual flush triggers**: 2s quiet timeout OR 10-message batch limit (whichever first)
+- **Sequential queue processing**: batches queue up and process one-by-one, no re-buffering
+- **No more retry storms**: removed exponential backoff, `_processing_channels`, `_debounce_retry_counts`
+- **New methods**: `_enqueue_batch()`, `_process_queue()`, `_process_batch()` (replaces `_flush_debounce()`)
+- **Hard cap**: 20 messages max in intake buffer (was 10), drops oldest on overflow
+
+### Changed — Dad Messages Through Daemon
+Dad's messages now go through the daemon like everyone else instead of auto-RESPOND:
+- Daemon classifies Dad as RESPOND when talking to/about Ene, CONTEXT when talking to others
+- Saves tokens when Dad is chatting with someone else and Ene doesn't need to respond
+- Safety: Dad is never dropped, never auto-muted — daemon prompt enforces this
+- Hardcoded fallback updated: Dad + "ene" or reply-to-ene → RESPOND, else → CONTEXT
+
+### Fixed — Session History Sanitization
+Raw `msg.content` was stored unsanitized in session history (lines 1754, 1772). Non-Dad messages containing Dad's platform IDs would persist in history and leak into future LLM contexts. Now sanitized with `_sanitize_dad_ids()` before storage.
+
+---
+
 ## [2026-02-18c] — Subconscious Daemon (Module 6) + Free Model Migration + Prompt Slimming
 
 ### Added — Subconscious Daemon Module (Module 6)

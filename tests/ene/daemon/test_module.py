@@ -136,10 +136,18 @@ class TestProcessMessage:
         assert result.model_used == "not_initialized"
 
     @pytest.mark.asyncio
-    async def test_not_initialized_dad_returns_respond(self):
+    async def test_not_initialized_dad_with_ene_returns_respond(self):
         mod = DaemonModule()
-        result = await mod.process_message("hello", "Dad", "dad123", True)
+        result = await mod.process_message("hey ene", "Dad", "dad123", True)
         assert result.classification == Classification.RESPOND
+        assert result.fallback_used is True
+
+    @pytest.mark.asyncio
+    async def test_not_initialized_dad_without_ene_returns_context(self):
+        """Dad talking to someone else → CONTEXT even when not initialized."""
+        mod = DaemonModule()
+        result = await mod.process_message("hello everyone", "Dad", "dad123", True)
+        assert result.classification == Classification.CONTEXT
         assert result.fallback_used is True
 
     @pytest.mark.asyncio

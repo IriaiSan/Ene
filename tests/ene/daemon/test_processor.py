@@ -287,12 +287,26 @@ class TestHardcodedFallback:
     def setup_method(self):
         self.proc = make_processor()
 
-    def test_dad_always_respond(self):
+    def test_dad_with_ene_mention_respond(self):
         start = time.perf_counter()
-        result = self.proc._hardcoded_fallback("hello", "123", True, start)
+        result = self.proc._hardcoded_fallback("hey ene check this", "123", True, start)
         assert result.classification == Classification.RESPOND
         assert result.fallback_used is True
         assert "Dad" in result.classification_reason
+
+    def test_dad_without_ene_mention_context(self):
+        """Dad talking to someone else → CONTEXT (save tokens)."""
+        start = time.perf_counter()
+        result = self.proc._hardcoded_fallback("hello everyone", "123", True, start)
+        assert result.classification == Classification.CONTEXT
+        assert "Dad" in result.classification_reason
+
+    def test_dad_reply_to_ene_respond(self):
+        start = time.perf_counter()
+        result = self.proc._hardcoded_fallback(
+            "yes", "123", True, start, metadata={"is_reply_to_ene": True}
+        )
+        assert result.classification == Classification.RESPOND
 
     def test_ene_mention_respond(self):
         start = time.perf_counter()

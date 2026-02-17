@@ -287,14 +287,14 @@ class AgentLoop:
         self._log_dir = workspace / "memory" / "logs"  # Ene: debug trace log directory
         self._trace: DebugTrace | None = None  # Ene: current debug trace (per message)
 
-        # Ene: message debounce — batch rapid messages per channel
-        self._debounce_window = 3.0  # seconds to wait for more messages
-        self._debounce_buffers: dict[str, list[InboundMessage]] = {}  # channel_key -> [messages]
+        # Ene: message debounce + queue — batch messages, process sequentially
+        self._debounce_window = 2.0  # seconds quiet before flushing batch to queue
+        self._debounce_batch_limit = 10  # force-flush when batch reaches this size
+        self._debounce_buffers: dict[str, list[InboundMessage]] = {}  # channel_key -> intake buffer
         self._debounce_timers: dict[str, asyncio.Task] = {}  # channel_key -> timer task
-        self._processing_channels: set[str] = set()  # channels currently being processed
-        self._debounce_max_buffer = 10  # max messages per debounce batch (drops oldest)
-        self._debounce_max_rebuffer = 15  # max re-buffered messages before dropping
-        self._debounce_retry_counts: dict[str, int] = {}  # Ene: retry counts for exponential backoff
+        self._debounce_max_buffer = 20  # hard cap on intake buffer (drops oldest)
+        self._channel_queues: dict[str, list[list[InboundMessage]]] = {}  # channel_key -> [batches]
+        self._queue_processors: dict[str, asyncio.Task] = {}  # channel_key -> processor task
 
         # Ene: per-user rate limiting — prevents spam attacks
         self._user_message_timestamps: dict[str, list[float]] = {}  # user_id -> [timestamps]
@@ -702,19 +702,18 @@ class AgentLoop:
     def _classify_message(self, msg: InboundMessage) -> str:
         """Classify a single message: 'respond', 'context', or 'drop'.
 
+        Hardcoded fallback when daemon is unavailable.
         - drop: muted users — silently removed before LLM sees them
-        - respond: Dad, mentions Ene, replies to Ene
-        - context: background chatter — LLM sees it but doesn't need to respond
+        - respond: mentions Ene, replies to Ene
+        - context: background chatter (including Dad talking to others)
         """
         caller_id = f"{msg.channel}:{msg.sender_id}"
 
         if self._is_muted(caller_id):
             return "drop"
 
-        if caller_id in DAD_IDS:
-            return "respond"
-
-        if "ene" in msg.content.lower() or msg.metadata.get("is_reply_to_ene"):
+        has_ene_signal = "ene" in msg.content.lower() or msg.metadata.get("is_reply_to_ene")
+        if has_ene_signal:
             return "respond"
 
         return "context"
@@ -877,34 +876,13 @@ class AgentLoop:
             },
         )
 
-    async def _flush_debounce(self, channel_key: str) -> None:
-        """Flush the debounce buffer for a channel — merge and process messages."""
-        messages = self._debounce_buffers.pop(channel_key, [])
-        self._debounce_timers.pop(channel_key, None)
+    async def _process_batch(self, channel_key: str, messages: list[InboundMessage]) -> None:
+        """Process a batch of messages — classify, merge, and send to LLM.
 
+        Called from _process_queue. No re-buffering needed — the queue
+        handles sequential processing.
+        """
         if not messages:
-            return
-
-        # If this channel is already being processed, re-buffer and retry with backoff
-        if channel_key in self._processing_channels:
-            # Ene: cap re-buffer size — if overwhelmed, drop oldest to prevent memory bloat
-            if len(messages) > self._debounce_max_rebuffer:
-                dropped = len(messages) - self._debounce_max_buffer
-                messages = messages[-self._debounce_max_buffer:]
-                logger.warning(f"Debounce: {channel_key} overwhelmed, dropped {dropped} messages (re-buffer cap)")
-            else:
-                # Ene: exponential backoff + log throttle to avoid spamming 60+ lines
-                retry_count = self._debounce_retry_counts.get(channel_key, 0) + 1
-                self._debounce_retry_counts[channel_key] = retry_count
-                if retry_count == 1 or retry_count % 10 == 0:
-                    logger.debug(f"Debounce: {channel_key} busy, re-buffering {len(messages)} messages (retry {retry_count})")
-            self._debounce_buffers[channel_key] = messages
-            # Ene: exponential backoff — 1s, 2s, 4s, 8s max
-            retry_count = self._debounce_retry_counts.get(channel_key, 0)
-            delay = min(1.0 * (2 ** min(retry_count - 1, 3)), 8.0) if retry_count > 0 else 1.0
-            self._debounce_timers[channel_key] = asyncio.create_task(
-                self._debounce_timer(channel_key, delay)
-            )
             return
 
         # Ene: per-message classification — daemon-enhanced filtering
@@ -920,40 +898,32 @@ class AgentLoop:
             if self._is_muted(caller_id):
                 continue
 
-            # Fast path: Dad → RESPOND (no daemon call, save rate limit)
-            if is_dad:
-                respond_msgs.append(m)
-                continue
-
-            # Has clear Ene signal? Run daemon for security analysis
-            has_ene_signal = "ene" in m.content.lower() or m.metadata.get("is_reply_to_ene")
-
-            # Run daemon if available
+            # Run daemon for ALL messages (including Dad) if available
             if daemon_mod and hasattr(daemon_mod, "process_message"):
                 try:
                     daemon_result = await daemon_mod.process_message(
                         content=m.content,
                         sender_name=m.metadata.get("author_name", m.sender_id),
                         sender_id=caller_id,
-                        is_dad=False,
+                        is_dad=is_dad,
                         metadata=m.metadata,
                     )
                     # Store daemon result on message metadata for context injection
                     m.metadata["_daemon_result"] = daemon_result
 
-                    # Auto-mute on high-severity security flags
-                    if daemon_result.should_auto_mute:
+                    # Auto-mute on high-severity security flags (never mute Dad)
+                    if daemon_result.should_auto_mute and not is_dad:
                         import time as _mute_time
                         sender_name = m.metadata.get("author_name", m.sender_id)
                         logger.warning(f"Daemon: auto-muting {sender_name} (high severity security flag)")
                         self._muted_users[caller_id] = _mute_time.time() + 1800  # 30 minutes
                         continue
 
-                    # Use daemon classification
+                    # Use daemon classification (Dad is never dropped)
                     if daemon_result.classification.value == "respond":
                         respond_msgs.append(m)
-                    elif daemon_result.classification.value == "drop":
-                        continue  # Silently dropped
+                    elif daemon_result.classification.value == "drop" and not is_dad:
+                        continue  # Silently dropped (safety: never drop Dad)
                     else:
                         context_msgs.append(m)
                     continue
@@ -1005,14 +975,13 @@ class AgentLoop:
             merged = self._merge_messages_tiered(respond_msgs, context_msgs)
         # Check if suspicious actions during merge should trigger auto-mute
         self._check_auto_mute(merged)
-        self._processing_channels.add(channel_key)
 
         try:
             response = await self._process_message(merged)
             if response:
                 await self.bus.publish_outbound(response)
         except Exception as e:
-            logger.error(f"Error processing debounced message: {e}", exc_info=True)
+            logger.error(f"Error processing batch: {e}", exc_info=True)
             caller_id = f"{merged.channel}:{merged.sender_id}"
             if caller_id in DAD_IDS:
                 await self.bus.publish_outbound(OutboundMessage(
@@ -1020,9 +989,6 @@ class AgentLoop:
                     chat_id=merged.chat_id,
                     content=f"something broke: {str(e)[:200]}"
                 ))
-        finally:
-            self._processing_channels.discard(channel_key)
-            self._debounce_retry_counts.pop(channel_key, None)  # Ene: reset backoff on channel free
 
     def _is_rate_limited(self, msg: "InboundMessage") -> bool:
         """Check if a non-Dad user is sending too fast (spam protection).
@@ -1138,10 +1104,39 @@ class AgentLoop:
                 f"({len(scores)} suspicious actions in {self._jailbreak_window}s)"
             )
 
-    async def _debounce_timer(self, channel_key: str, delay: float | None = None) -> None:
-        """Wait for the debounce window, then flush."""
-        await asyncio.sleep(delay or self._debounce_window)
-        await self._flush_debounce(channel_key)
+    async def _debounce_timer(self, channel_key: str) -> None:
+        """Wait for the debounce window, then flush batch to queue."""
+        await asyncio.sleep(self._debounce_window)
+        self._debounce_timers.pop(channel_key, None)
+        self._enqueue_batch(channel_key)
+
+    def _enqueue_batch(self, channel_key: str) -> None:
+        """Move current intake buffer into the processing queue."""
+        batch = self._debounce_buffers.pop(channel_key, [])
+        if not batch:
+            return
+        if channel_key not in self._channel_queues:
+            self._channel_queues[channel_key] = []
+        self._channel_queues[channel_key].append(batch)
+        logger.debug(f"Queue: enqueued {len(batch)} messages for {channel_key} (queue depth: {len(self._channel_queues[channel_key])})")
+        # Start queue processor if not already running
+        existing = self._queue_processors.get(channel_key)
+        if not existing or existing.done():
+            self._queue_processors[channel_key] = asyncio.create_task(
+                self._process_queue(channel_key)
+            )
+
+    async def _process_queue(self, channel_key: str) -> None:
+        """Process batches from the queue sequentially."""
+        queue = self._channel_queues.get(channel_key)
+        while queue:
+            batch = queue.pop(0)
+            try:
+                await self._process_batch(channel_key, batch)
+            except Exception as e:
+                logger.error(f"Queue: error processing batch in {channel_key}: {e}", exc_info=True)
+        # Clean up empty queue
+        self._channel_queues.pop(channel_key, None)
 
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
@@ -1177,27 +1172,33 @@ class AgentLoop:
                 if self._is_rate_limited(msg):
                     continue
 
-                # Ene: debounce — buffer messages per channel, flush after window
+                # Ene: debounce + queue — buffer messages, flush on time or count
                 channel_key = msg.session_key  # "channel:chat_id"
 
                 if channel_key not in self._debounce_buffers:
                     self._debounce_buffers[channel_key] = []
                 self._debounce_buffers[channel_key].append(msg)
 
-                # Ene: cap buffer size — drop oldest if someone is flooding
+                # Hard cap — drop oldest if flooding
                 if len(self._debounce_buffers[channel_key]) > self._debounce_max_buffer:
                     dropped = len(self._debounce_buffers[channel_key]) - self._debounce_max_buffer
                     self._debounce_buffers[channel_key] = self._debounce_buffers[channel_key][-self._debounce_max_buffer:]
-                    logger.warning(f"Debounce: dropped {dropped} oldest messages in {channel_key} (buffer cap)")
+                    logger.warning(f"Debounce: dropped {dropped} oldest in {channel_key} (buffer cap)")
 
-                # Cancel existing timer and start a new one (reset the window)
-                existing_timer = self._debounce_timers.get(channel_key)
-                if existing_timer and not existing_timer.done():
-                    existing_timer.cancel()
-
-                self._debounce_timers[channel_key] = asyncio.create_task(
-                    self._debounce_timer(channel_key)
-                )
+                # Count-based trigger: force-flush when batch limit reached
+                if len(self._debounce_buffers[channel_key]) >= self._debounce_batch_limit:
+                    existing = self._debounce_timers.pop(channel_key, None)
+                    if existing and not existing.done():
+                        existing.cancel()
+                    self._enqueue_batch(channel_key)
+                else:
+                    # Time-based trigger: reset sliding window timer
+                    existing = self._debounce_timers.get(channel_key)
+                    if existing and not existing.done():
+                        existing.cancel()
+                    self._debounce_timers[channel_key] = asyncio.create_task(
+                        self._debounce_timer(channel_key)
+                    )
 
             except asyncio.TimeoutError:
                 continue
@@ -1750,8 +1751,9 @@ Write the summary:"""
                 f"(tools_used={tools_used}). Response likely already sent via tool, "
                 f"or loop broke. NOT sending fallback message."
             )
-            # Still store in session so history isn't lost
-            session.add_message("user", msg.content)
+            # Still store in session so history isn't lost (sanitize Dad IDs)
+            _hist_pid = f"{msg.channel}:{msg.sender_id}"
+            session.add_message("user", _sanitize_dad_ids(msg.content, _hist_pid))
             session.add_message("assistant", "",
                                 tools_used=tools_used if tools_used else None)
             self.sessions.save(session)
@@ -1768,8 +1770,9 @@ Write the summary:"""
             asyncio.create_task(self.module_registry.notify_message(msg, responded=True))
             return None
 
-        # Ene: store raw response in session before cleaning
-        session.add_message("user", msg.content)
+        # Ene: store response in session (sanitize Dad IDs from user content)
+        _hist_pid = f"{msg.channel}:{msg.sender_id}"
+        session.add_message("user", _sanitize_dad_ids(msg.content, _hist_pid))
         session.add_message("assistant", final_content,
                             tools_used=tools_used if tools_used else None)
         self.sessions.save(session)

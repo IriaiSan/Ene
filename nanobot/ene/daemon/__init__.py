@@ -159,9 +159,13 @@ class DaemonModule(EneModule):
             DaemonResult with classification and analysis.
         """
         if not self.processor:
-            # Module not initialized — return safe default
+            # Module not initialized — use same logic as hardcoded fallback
+            has_ene_signal = "ene" in content.lower() or bool(
+                metadata and metadata.get("is_reply_to_ene")
+            )
+            classification = Classification.RESPOND if has_ene_signal else Classification.CONTEXT
             result = DaemonResult(
-                classification=Classification.RESPOND if is_dad else Classification.CONTEXT,
+                classification=classification,
                 fallback_used=True,
                 model_used="not_initialized",
             )
