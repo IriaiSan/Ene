@@ -130,11 +130,15 @@ class DaemonProcessor:
     # ── Internal ───────────────────────────────────────────────────────
 
     def _get_current_model(self) -> str:
-        """Get the current model, rotating through fallbacks."""
+        """Get the current model, rotating through fallbacks.
+
+        NEVER falls back to openrouter/auto — that routes to expensive paid
+        models. If no fallback list, use the first DEFAULT_FREE_MODELS entry.
+        """
         if self._model:
             return self._model
         if not self._fallback_models:
-            return "openrouter/auto"
+            return DEFAULT_FREE_MODELS[0] if DEFAULT_FREE_MODELS else "meta-llama/llama-3.3-70b-instruct:free"
         return self._fallback_models[self._model_index % len(self._fallback_models)]
 
     def _rotate_model(self) -> None:

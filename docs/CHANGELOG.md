@@ -4,7 +4,12 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
-## [2026-02-18i] — Updated Daemon Free Models
+## [2026-02-18i] — Updated Daemon Free Models + Kill openrouter/auto
+
+### Fixed — Removed openrouter/auto Fallback (was routing to expensive paid models)
+- Daemon's ultimate fallback was `openrouter/auto` which routes to ANY model (Claude Opus, GPT-5, etc.)
+- Replaced with hardcoded first free model from DEFAULT_FREE_MODELS
+- Historical charges from `openrouter/auto` were from old config (`consolidationModel: "openrouter/auto"`)
 
 ### Changed — Free Model Rotation List
 - Old models removed from OpenRouter: `llama-4-maverick:free`, `qwen3-30b-a3b:free` (explains constant daemon timeouts)
