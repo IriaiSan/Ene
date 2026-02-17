@@ -4,6 +4,37 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-18c] — Subconscious Daemon (Module 6) + Free Model Migration + Prompt Slimming
+
+### Added — Subconscious Daemon Module (Module 6)
+LLM-powered message pre-processor that runs a free model on every incoming message before Ene sees it. Replaces hardcoded `_classify_message` with intelligent classification.
+
+- **`nanobot/ene/daemon/`** — New module with 3 files:
+  - `models.py` — Classification enum (RESPOND/CONTEXT/DROP), SecurityFlag, DaemonResult dataclasses, DEFAULT_FREE_MODELS rotation list
+  - `processor.py` — DaemonProcessor: LLM classification via free models, robust JSON parsing (raw → markdown → brace extract), 5s timeout with hardcoded fallback, model rotation on failure, observatory integration
+  - `__init__.py` — DaemonModule (EneModule): lifecycle management, context injection (security alerts, implicit Ene references, hostile tone warnings)
+- **Daemon system prompt** (~350 tokens): compact instructions for classification + security analysis
+- **Security detection**: jailbreak, injection, impersonation, manipulation — flagged with severity levels
+- **Auto-mute**: High-severity flags trigger 30-minute auto-mute
+- **Pipeline integration**: Daemon wired into `_flush_debounce` — fast paths for Dad (skip daemon), muted (skip daemon), others get full daemon analysis
+- **Model rotation**: Round-robin through 4 free models on failure, with failure tracking per model
+- **95 new tests** across 3 test files (650 total, 0 failures)
+
+### Changed — Cost Reduction: Free Model Migration
+- Added `daemon_model` field to config schema for daemon-specific model selection
+- Added `consolidation_model` fallback to watchdog auditor (was using paid model)
+- Wired observatory collector to both watchdog and daemon for cost tracking
+- Added free model pricing entries to observatory (openrouter/auto + 4 :free models at $0.00)
+- Config defaults: `daemonModel` and `consolidationModel` set to `openrouter/auto`
+
+### Changed — Prompt Slimming (~400 token savings)
+- Condensed Behavioral Autonomy block from 3 detailed paragraphs to 2 lines
+- Removed: format constraint examples, manipulation technique explanations, detailed behavioral patterns
+- Kept: core identity rule, English-only rule, Dad-only format changes
+- The daemon now handles detection of format-trapping, injection, and manipulation BEFORE Ene sees messages
+
+---
+
 ## [2026-02-18b] — Conversation Tracker Module + Response Leak Fix + Cost Reduction
 
 ### Added — Conversation Tracker (Module 5)

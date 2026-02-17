@@ -424,6 +424,10 @@ class AgentLoop:
             from nanobot.ene.conversation import ConversationTrackerModule
             self.module_registry.register(ConversationTrackerModule())
 
+            # Register Daemon Module (Module 6: subconscious pre-processor)
+            from nanobot.ene.daemon import DaemonModule
+            self.module_registry.register(DaemonModule())
+
         except Exception as e:
             logger.error(f"Failed to register Ene modules: {e}", exc_info=True)
 
@@ -452,6 +456,22 @@ class AgentLoop:
             registry = getattr(social_mod, "registry", None)
             if registry:
                 conv_mod.tracker.set_social_registry(registry)
+
+        # Wire observatory collector to watchdog + daemon for cost tracking
+        obs_mod = self.module_registry.get_module("observatory")
+        if obs_mod:
+            collector = getattr(obs_mod, "collector", None)
+            if collector:
+                # Wire to watchdog auditor
+                wd_mod = self.module_registry.get_module("watchdog")
+                if wd_mod and hasattr(wd_mod, "_auditor") and wd_mod._auditor:
+                    wd_mod._auditor._observatory = collector
+                    logger.debug("Wired observatory → watchdog")
+                # Wire to daemon processor
+                daemon_mod = self.module_registry.get_module("daemon")
+                if daemon_mod and hasattr(daemon_mod, "processor") and daemon_mod.processor:
+                    daemon_mod.processor._observatory = collector
+                    logger.debug("Wired observatory → daemon")
 
         # Register module tools with the ToolRegistry
         for tool in self.module_registry.get_all_tools():
@@ -887,20 +907,70 @@ class AgentLoop:
             )
             return
 
-        # Ene: per-message classification — filter before merge
+        # Ene: per-message classification — daemon-enhanced filtering
         respond_msgs: list[InboundMessage] = []
         context_msgs: list[InboundMessage] = []
+        daemon_mod = self.module_registry.get_module("daemon")
+
         for m in messages:
+            caller_id = f"{m.channel}:{m.sender_id}"
+            is_dad = caller_id in DAD_IDS
+
+            # Fast path: muted → DROP (no daemon call, save rate limit)
+            if self._is_muted(caller_id):
+                continue
+
+            # Fast path: Dad → RESPOND (no daemon call, save rate limit)
+            if is_dad:
+                respond_msgs.append(m)
+                continue
+
+            # Has clear Ene signal? Run daemon for security analysis
+            has_ene_signal = "ene" in m.content.lower() or m.metadata.get("is_reply_to_ene")
+
+            # Run daemon if available
+            if daemon_mod and hasattr(daemon_mod, "process_message"):
+                try:
+                    daemon_result = await daemon_mod.process_message(
+                        content=m.content,
+                        sender_name=m.metadata.get("author_name", m.sender_id),
+                        sender_id=caller_id,
+                        is_dad=False,
+                        metadata=m.metadata,
+                    )
+                    # Store daemon result on message metadata for context injection
+                    m.metadata["_daemon_result"] = daemon_result
+
+                    # Auto-mute on high-severity security flags
+                    if daemon_result.should_auto_mute:
+                        import time as _mute_time
+                        sender_name = m.metadata.get("author_name", m.sender_id)
+                        logger.warning(f"Daemon: auto-muting {sender_name} (high severity security flag)")
+                        self._muted_users[caller_id] = _mute_time.time() + 1800  # 30 minutes
+                        continue
+
+                    # Use daemon classification
+                    if daemon_result.classification.value == "respond":
+                        respond_msgs.append(m)
+                    elif daemon_result.classification.value == "drop":
+                        continue  # Silently dropped
+                    else:
+                        context_msgs.append(m)
+                    continue
+                except Exception as e:
+                    logger.debug(f"Daemon failed for message, falling back: {e}")
+
+            # Fallback: hardcoded classification (daemon unavailable or failed)
             tier = self._classify_message(m)
             if tier == "respond":
                 respond_msgs.append(m)
             elif tier == "context":
                 context_msgs.append(m)
-            # "drop" → silently discarded (muted users)
+            # "drop" → silently discarded
 
         dropped = len(messages) - len(respond_msgs) - len(context_msgs)
         if dropped:
-            logger.debug(f"Debounce: dropped {dropped} messages from muted users in {channel_key}")
+            logger.debug(f"Debounce: dropped {dropped} messages in {channel_key}")
 
         # No respond messages → lurk all context messages (no LLM call)
         if not respond_msgs:

@@ -77,6 +77,12 @@ class WatchdogModule(EneModule):
         else:
             model = None
 
+        # Fall back to consolidation_model (free tier) if no watchdog-specific model
+        if not model:
+            defaults = getattr(getattr(ctx.config, "agents", None), "defaults", None)
+            if defaults:
+                model = getattr(defaults, "consolidation_model", None)
+
         if not self._enabled:
             logger.info("Watchdog: disabled in config")
             return
