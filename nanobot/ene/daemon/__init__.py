@@ -75,7 +75,7 @@ class DaemonModule(EneModule):
             provider=ctx.provider,
             model=model,
             temperature=0.1,
-            timeout_seconds=5.0,
+            timeout_seconds=10.0,  # 10s — free models can be slow
             observatory=observatory,
         )
 

@@ -4,6 +4,24 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-18k] — Thread Replay Fix v2 + Agent Loop Hardening
+
+### Fixed — Loaded Threads Replaying Full History on Restart
+- Threads loaded from disk had `last_shown_index=0`, causing full replay of old conversations on first message after restart
+- Now `load_state()` marks all loaded threads as fully shown (`last_shown_index = len(messages)`)
+- Ene will only see NEW messages added to those threads after restart
+
+### Fixed — Ene Sending Multiple Messages Per Turn
+- Agent loop allowed Dad-triggered batches to keep running after first message sent, leading to duplicate messages
+- New logic: after message tool is used, allow max 1 more iteration (for save_memory/update_person), then hard stop
+- Second message tool call always triggers immediate break
+
+### Changed — Daemon Timeout + Model Order
+- Increased daemon timeout from 5s to 10s (free models can be slow)
+- Reordered models: fastest first (Arcee Trinity, GLM 4.5), reasoning model (DeepSeek R1) last
+
+---
+
 ## [2026-02-18j] — Thread Replay Fix + Watchdog Disabled
 
 ### Fixed — Thread Context Re-Replaying Entire History Every Batch

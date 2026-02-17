@@ -595,6 +595,7 @@ class AgentLoop:
         final_content = None
         tools_used: list[str] = []
         message_sent = False  # Ene: track if message tool already sent a response
+        post_message_turns = 0  # Ene: count turns after message was sent
         consecutive_same_tool = 0  # Ene: loop detection — same tool called repeatedly
         last_tool_name = None
 
@@ -681,21 +682,18 @@ class AgentLoop:
                     final_content = None
                     break
 
-                # Ene: if message tool was used this iteration, STOP the loop.
-                # The response is already sent to Discord. Continuing just causes
-                # the "Done" / "Loop detected" spam (Makima incident).
-                # Exception: Dad gets full tool chains (search → message → save is OK)
-                if message_sent and self._current_caller_id not in DAD_IDS:
-                    logger.debug("Agent loop: message sent, stopping (non-Dad caller)")
-                    final_content = None  # Already sent via tool
-                    break
-
-                # Ene: even for Dad, if message was already sent and the model
-                # calls message AGAIN, that's a loop — stop it
-                if message_sent and tools_used.count("message") >= 2:
-                    logger.warning("Agent loop: duplicate message tool calls detected, breaking loop")
-                    final_content = None
-                    break
+                # Ene: once message tool is used, allow max 1 more iteration
+                # for memory/person tools, then hard stop. Never send 2 messages.
+                if message_sent:
+                    if tools_used.count("message") >= 2:
+                        logger.warning("Agent loop: duplicate message tool, breaking")
+                        final_content = None
+                        break
+                    post_message_turns += 1
+                    if post_message_turns > 1:
+                        logger.debug("Agent loop: post-message turn limit, stopping")
+                        final_content = None
+                        break
 
             else:
                 final_content = response.content

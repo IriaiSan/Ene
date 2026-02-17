@@ -64,9 +64,10 @@ class DaemonResult:
 
 # Models to rotate through when primary model fails or is rate-limited.
 # User-specified models that are currently working on OpenRouter free tier.
+# Ordered fastest-first: reasoning model (R1) last since it thinks for 10-30s.
 # Updated 2026-02-18b — user-verified working models.
 DEFAULT_FREE_MODELS = [
-    "deepseek/deepseek-r1-0528:free",                   # DeepSeek R1, strong reasoning + JSON
-    "z-ai/glm-4.5-air:free",                            # GLM 4.5 Air, fast
-    "arcee-ai/trinity-large-preview:free",               # Arcee Trinity, large preview
+    "arcee-ai/trinity-large-preview:free",               # Arcee Trinity — fast, worked in logs
+    "z-ai/glm-4.5-air:free",                            # GLM 4.5 Air — fast
+    "deepseek/deepseek-r1-0528:free",                   # DeepSeek R1 — slow (reasoning), last resort
 ]

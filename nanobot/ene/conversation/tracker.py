@@ -93,6 +93,18 @@ class ConversationTracker:
             if pm.discord_msg_id:
                 self._pending_by_msg_id[pm.discord_msg_id] = i
 
+        # On restart, mark all loaded threads as fully shown.
+        # The previous session's history already contains these messages —
+        # re-showing them would cause Ene to re-respond to old context.
+        for thread in self._threads.values():
+            if thread.last_shown_index == 0 and thread.messages:
+                thread.last_shown_index = len(thread.messages)
+                self._dirty = True
+            # Also: if last_shown_index is somehow stale (> messages), clamp it
+            elif thread.last_shown_index > len(thread.messages):
+                thread.last_shown_index = len(thread.messages)
+                self._dirty = True
+
         # Expire anything that went stale during downtime
         self.tick_states()
 
