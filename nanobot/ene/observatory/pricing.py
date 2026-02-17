@@ -31,13 +31,10 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     # Meta (via OpenRouter)
     "meta-llama/llama-3.1-70b-instruct": {"input": 0.52, "output": 0.75},
     "meta-llama/llama-3.1-8b-instruct": {"input": 0.06, "output": 0.06},
-    # Free models (OpenRouter :free tier — updated 2026-02-18)
-    "openrouter/auto": {"input": 0.0, "output": 0.0},
-    "qwen/qwen3-next-80b-a3b-instruct:free": {"input": 0.0, "output": 0.0},
-    "mistralai/mistral-small-3.1-24b-instruct:free": {"input": 0.0, "output": 0.0},
-    "nvidia/nemotron-nano-9b-v2:free": {"input": 0.0, "output": 0.0},
-    "meta-llama/llama-3.3-70b-instruct:free": {"input": 0.0, "output": 0.0},
-    "google/gemma-3-27b-it:free": {"input": 0.0, "output": 0.0},
+    # Free models (OpenRouter :free tier — updated 2026-02-18b)
+    "deepseek/deepseek-r1-0528:free": {"input": 0.0, "output": 0.0},
+    "z-ai/glm-4.5-air:free": {"input": 0.0, "output": 0.0},
+    "arcee-ai/trinity-large-preview:free": {"input": 0.0, "output": 0.0},
 }
 
 # Fallback pricing for unknown models

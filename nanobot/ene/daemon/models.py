@@ -63,11 +63,10 @@ class DaemonResult:
 # ── Free model configuration ──────────────────────────────────────────
 
 # Models to rotate through when primary model fails or is rate-limited.
-# Prioritized by: structured output support > instruction following > speed.
-# Updated 2026-02-18 — old models (llama-4-maverick, qwen3-30b-a3b) removed from OpenRouter.
+# User-specified models that are currently working on OpenRouter free tier.
+# Updated 2026-02-18b — user-verified working models.
 DEFAULT_FREE_MODELS = [
-    "qwen/qwen3-next-80b-a3b-instruct:free",        # Best: native structured output, 80B MoE
-    "mistralai/mistral-small-3.1-24b-instruct:free",  # Excellent JSON following, 24B
-    "nvidia/nemotron-nano-9b-v2:free",                 # Small + fast, structured output
-    "meta-llama/llama-3.3-70b-instruct:free",          # Big + reliable instruction follower
+    "deepseek/deepseek-r1-0528:free",                   # DeepSeek R1, strong reasoning + JSON
+    "z-ai/glm-4.5-air:free",                            # GLM 4.5 Air, fast
+    "arcee-ai/trinity-large-preview:free",               # Arcee Trinity, large preview
 ]

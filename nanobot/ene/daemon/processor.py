@@ -138,7 +138,7 @@ class DaemonProcessor:
         if self._model:
             return self._model
         if not self._fallback_models:
-            return DEFAULT_FREE_MODELS[0] if DEFAULT_FREE_MODELS else "meta-llama/llama-3.3-70b-instruct:free"
+            return DEFAULT_FREE_MODELS[0] if DEFAULT_FREE_MODELS else "deepseek/deepseek-r1-0528:free"
         return self._fallback_models[self._model_index % len(self._fallback_models)]
 
     def _rotate_model(self) -> None:
