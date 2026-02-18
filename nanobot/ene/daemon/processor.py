@@ -96,12 +96,13 @@ class DaemonProcessor:
         sender_id: str,
         is_dad: bool,
         metadata: dict | None = None,
+        channel_state=None,
     ) -> DaemonResult:
         """Process a message through the daemon.
 
         Returns DaemonResult with classification, security analysis,
-        and optionally sanitized content. Falls back to hardcoded
-        classification on failure/timeout.
+        and optionally sanitized content. Falls back to math classifier
+        (if channel_state available) or regex on failure/timeout.
         """
         start = _time.perf_counter()
 
@@ -118,14 +119,14 @@ class DaemonProcessor:
             logger.warning(f"Daemon: timeout after {self._timeout}s on {model}, falling back")
             self._record_failure(model)
             self._rotate_model()
-            return self._hardcoded_fallback(content, sender_id, is_dad, start, metadata)
+            return self._hardcoded_fallback(content, sender_id, is_dad, start, metadata, channel_state)
 
         except Exception as e:
             model = self._get_current_model()
             logger.warning(f"Daemon: LLM failed on {model} ({e}), falling back")
             self._record_failure(model)
             self._rotate_model()
-            return self._hardcoded_fallback(content, sender_id, is_dad, start, metadata)
+            return self._hardcoded_fallback(content, sender_id, is_dad, start, metadata, channel_state)
 
     # ── Internal ───────────────────────────────────────────────────────
 
@@ -277,11 +278,14 @@ class DaemonProcessor:
     def _hardcoded_fallback(
         self, content: str, sender_id: str, is_dad: bool, start: float,
         metadata: dict | None = None,
+        channel_state=None,
     ) -> DaemonResult:
-        """Fallback to existing hardcoded classification logic.
+        """Fallback classification when daemon LLM fails or times out.
 
-        Reproduces the behavior of _classify_message() in loop.py
-        so the daemon failure is invisible to the rest of the pipeline.
+        Two modes:
+        1. Math classifier (when channel_state is available): Naive Bayes
+           log-odds over 8 features. Under 1ms, no API calls.
+        2. Regex fallback (no state): simple \bene\b pattern match.
         """
         result = DaemonResult(
             fallback_used=True,
@@ -289,10 +293,41 @@ class DaemonProcessor:
             model_used="hardcoded_fallback",
         )
 
+        is_stale = bool(metadata and metadata.get("_is_stale"))
+
+        # ── Math classifier path (preferred) ───────────────────────
+        if channel_state is not None:
+            from nanobot.ene.conversation.signals import classify_with_state
+
+            cls, score, features = classify_with_state(
+                content,
+                sender_id,
+                channel_state,
+                is_at_mention=bool(metadata and metadata.get("is_at_mention")),
+                is_reply_to_ene=bool(metadata and metadata.get("is_reply_to_ene")),
+                is_in_ene_thread=bool(metadata and metadata.get("is_in_ene_thread")),
+            )
+
+            # Dad override: never DROP Dad
+            if is_dad and cls == "drop":
+                cls = "context"
+
+            # Stale non-Dad override: cap at CONTEXT unless strong signal
+            if is_stale and not is_dad and cls == "respond" and score < 0.85:
+                cls = "context"
+
+            result.classification = Classification[cls.upper()]
+            result.confidence = score
+            # Show top contributing feature in reason
+            top = max(features, key=features.get) if features else "none"
+            result.classification_reason = f"math({score:.2f}): {top}={features.get(top, 0):.1f}"
+            result.model_used = "math_classifier"
+            return result
+
+        # ── Regex fallback (no channel state) ──────────────────────
         has_ene_signal = bool(_ENE_PATTERN.search(content)) or bool(
             metadata and metadata.get("is_reply_to_ene")
         )
-        is_stale = bool(metadata and metadata.get("_is_stale"))
 
         if is_dad:
             if has_ene_signal:

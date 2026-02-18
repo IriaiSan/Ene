@@ -200,6 +200,7 @@ class TestProcessMessage:
             sender_id="123",
             is_dad=False,
             metadata=metadata,
+            channel_state=None,
         )
 
 

@@ -217,4 +217,105 @@ Research conducted 2026-02-16 to inform context window, session management, and 
 
 ---
 
-*Last updated: 2026-02-16*
+## Multi-Party Conversation Research (2026-02-18)
+
+Comprehensive literature review across 60+ papers covering conversation disentanglement, multi-party dialogue, addressee detection, and context management. Key finding: **Ene's problem is genuinely novel** — no deployed system handles interleaved multi-party conversations in flat Discord channels. Academic foundations exist but nobody has integrated them.
+
+### Key Papers (Top 10 for Ene)
+
+| Paper | Year | arXiv | Key Insight |
+|-------|------|-------|-------------|
+| HUMA (Jacniacki et al.) | 2025 | 2511.17315 | Router/Action/Reflection architecture for group chat AI. 97 humans couldn't distinguish from real. Closest to Ene's architecture. |
+| Kummerfeld et al. | 2019 | 1810.11118 | Foundational IRC disentanglement dataset (77K messages). Reply-structure is a DAG, not a tree. |
+| Pointer Networks (Yu & Joty) | 2020 | 2010.11080 | Thread detection as "point to reply target" — each message points to what it responds to. |
+| Inoue et al. | 2025 | 2501.16643 | GPT-4o performs near-chance on addressee recognition. 80% of turns have implicit addressees. Explicit signals essential. |
+| MPC-BERT (Gu et al.) | 2021 | 2106.01541 | Pre-trained for multi-party: "who says what to whom" learned via self-supervision. |
+| GIFT (Gu et al.) | 2023 | 2305.09360 | 4 extra parameters per Transformer layer distinguishes reply/speaker/topic relations. |
+| DialogueRNN (Majumder et al.) | 2019 | 1811.00405 | Three-level state: global + per-speaker + emotion. Each with separate GRU. |
+| AFM (Cruz) | 2025 | 2511.12712 | Three-tier Full/Compressed/Placeholder context. Open-source. |
+| StreamingDialogue (Li et al.) | 2024 | 2403.08312 | Utterance-level compression. 4x speedup, 18x memory reduction. Short-memory + long-memory reactivation. |
+| SI-RNN (Zhang et al.) | 2017 | 1709.04005 | Joint addressee + response selection. Updates BOTH sender and receiver embeddings. |
+
+### Implemented Findings **[IMPLEMENTED 2026-02-18]**
+
+1. **Naive Bayes Relevance Classifier** — 8 weighted features, sigmoid log-odds combination. Under 1ms per message. Replaces LLM calls for classification fallback.
+   - Based on: Ouchi & Tsuboi 2016 (addressee detection), Kummerfeld et al. 2019 (signal features)
+   - File: `nanobot/ene/conversation/signals.py`
+
+2. **ChannelState Tracker** — Per-channel state tracking: Ene's last activity, per-author interaction rates, message rate estimation, conversation state detection (active/winding/dead).
+   - Based on: Hawkes process theory (temporal point processes), DialogueRNN three-level state
+   - File: `nanobot/ene/conversation/signals.py`
+
+3. **Explicit Signal Priority** — Research confirms: @mention, reply chains, and name mentions are the only reliable addressee signals. Content-based detection (even by GPT-4o) barely beats chance.
+   - Based on: Inoue et al. 2025 (addressee benchmark)
+   - Weights: mention=6.0, reply=5.5, name=4.0 >> recency=1.5, history=1.0
+
+### Future Research TODOs
+
+#### Three-Tier Context Compression (AFM-style)
+- Replace binary full/consolidated with Full → Compressed → Placeholder
+- Full: recent relevant messages (last 10-20)
+- Compressed: summaries of older threads (1-2 sentences each)
+- Placeholder: just metadata — "[User X discussed topic Y, 30 min ago]"
+- Based on: AFM (2511.12712), StreamingDialogue (2403.08312)
+- Priority: HIGH — would significantly reduce token usage
+
+#### Better Thread Assignment (Pointer Networks)
+- Current: heuristic signal scoring (temporal + speaker + lexical + reply)
+- Future: learned scoring via small local model, trained on Ene's own conversation data
+- Based on: Yu & Joty 2020 (2010.11080), DAG-LSTMs (2106.09024)
+- Priority: MEDIUM — current heuristics work OK for now
+
+#### Topic-Based Thread Grouping
+- Current: temporal decay drives thread lifecycle
+- Future: keep threads alive if topic is still relevant, not just recent
+- Based on: EpiCache (2509.17396) episode clustering, Topic-BERT (2010.07785)
+- Priority: MEDIUM
+
+#### Per-Speaker State Tracking (DialogueRNN-style)
+- Current: social module tracks trust + facts per person
+- Future: track conversation state per speaker (engaged, lurking, hostile, curious)
+- Based on: DialogueRNN (1811.00405), PANet (2205.02524)
+- Priority: LOW — Phase 3 mood system covers this
+
+#### Conversation Disentanglement Dataset
+- Collect Ene's Discord data to build a labeled disentanglement dataset
+- Use for fine-tuning thread assignment scoring
+- Based on: Kummerfeld IRC dataset methodology
+- Priority: LOW — needs significant data first
+
+#### HUMA-Style Reflection Loop
+- After Ene responds, run a reflection pass: was the response appropriate? Should she have stayed silent?
+- Based on: HUMA (2511.17315) three-component architecture
+- Priority: LOW — would add latency
+
+### Additional Papers for Reference
+
+**Conversation Disentanglement:**
+- Zhu et al. 2021 (2112.05346) — Transformers + bipartite graph post-processing
+- Liu et al. 2021 (2109.03199) — Unsupervised co-training (no labels needed)
+- Chang et al. 2023 (2305.16648) — Dramatic disentanglement (movies/TV)
+
+**Multi-Party Dialogue:**
+- SA-LLM (Sun et al. 2025, 2503.08842) — Speaker-attentive LLM
+- MuPaS (Wang et al. 2024, 2412.05342) — Multi-party fine-tuning + next-speaker prediction
+- DialSim (Kim et al. 2024, 2406.13144) — Evaluation benchmark
+
+**Context/Memory Management:**
+- DYCP (Choi et al. 2026, 2601.07994) — Dynamic context pruning
+- HyMem (Zhao et al. 2026, 2602.13933) — 92.6% cost reduction
+- MemoryOS (Kang et al. 2025, 2506.06326) — OS-inspired 3-tier memory
+- HiMem (Zhang et al. 2026, 2601.06377) — Hippocampus-inspired, open source
+- Livia (Xi & Wang 2025, 2509.05298) — Companion with progressive compression
+
+**Turn-Taking:**
+- Gatti de Bayser et al. 2020 (2001.06350) — Hybrid turn-taking (95.65% accuracy)
+- Elmers et al. 2025 (2507.07518) — Triadic (3-person) turn-taking
+
+**Practical Systems:**
+- MARCO (Shrimal et al. 2024, 2410.21784) — Multi-agent real-time chat orchestration, 94.48% accuracy
+- BlenderBot 3 (Shuster et al. 2022, 2208.03188) — Deployed with memory
+
+---
+
+*Last updated: 2026-02-18*

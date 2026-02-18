@@ -4,6 +4,43 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-18m] — Math Classifier + Duplicate Fix + Research
+
+### Added — Naive Bayes Relevance Classifier (No LLM)
+- New math-based message classifier in `conversation/signals.py`:
+  - 8 weighted features: @mention (6.0), reply (5.5), name (4.0), thread (2.0), recency (1.5), adjacency (1.5), author_hist (1.0), question (0.5)
+  - Sigmoid log-odds: P(for_ene) = sigmoid(prior + W . F)
+  - Thresholds: >= 0.7 RESPOND, [0.3, 0.7) CONTEXT, < 0.3 DROP
+  - Under 1ms per message, zero API calls
+- New `ChannelState` dataclass tracks per-channel state: Ene's last activity, per-author interaction rates, message arrival rate, conversation state (active/winding/dead)
+- Classifier wired into daemon fallback and loop `_classify_message()` — used when LLM daemon fails/times out
+- 56 new tests in `tests/ene/conversation/test_relevance.py`
+- Research: 60+ papers documented in `docs/RESEARCH.md` covering conversation disentanglement, multi-party dialogue, addressee detection, context compression
+
+### Fixed — Duplicate Discord Messages Per Turn
+- Agent loop allowed follow-up text content after message tool was already sent
+- Old check only suppressed exact "done" / "done." text — any other LLM commentary leaked as a second Discord message
+- Now ALL text content is suppressed when `message_sent` is True
+
+### Changed — Daemon Fallback Now Uses Math Classifier
+- `_hardcoded_fallback()` uses `classify_with_state()` when ChannelState available
+- Falls back to regex when no state (first messages before any tracking)
+- Daemon `process_message()` accepts optional `channel_state` parameter
+- Classification reason now shows `math(0.XX): feature=value` for debugging
+
+### Files Modified
+- `nanobot/agent/loop.py` — duplicate fix, channel_state wiring, Ene state update on response
+- `nanobot/ene/conversation/signals.py` — relevance classifier + ChannelState
+- `nanobot/ene/conversation/tracker.py` — get_channel_state(), ingest_batch state update
+- `nanobot/ene/daemon/processor.py` — math classifier in fallback
+- `nanobot/ene/daemon/__init__.py` — channel_state passthrough
+- `tests/ene/conversation/test_relevance.py` — 56 new tests
+- `tests/ene/daemon/test_module.py` — updated for new param
+- `docs/RESEARCH.md` — 60+ paper research reference
+- `docs/CHANGELOG.md` — this entry
+
+---
+
 ## [2026-02-18k] — Thread Replay Fix v2 + Agent Loop Hardening
 
 ### Fixed — Loaded Threads Replaying Full History on Restart

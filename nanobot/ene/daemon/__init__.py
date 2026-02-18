@@ -146,6 +146,7 @@ class DaemonModule(EneModule):
         sender_id: str,
         is_dad: bool,
         metadata: dict | None = None,
+        channel_state=None,
     ) -> DaemonResult:
         """Run daemon analysis on a message.
 
@@ -158,21 +159,42 @@ class DaemonModule(EneModule):
             sender_id: Platform user ID
             is_dad: Whether sender is Dad (always RESPOND)
             metadata: Extra context (is_reply_to_ene, etc.)
+            channel_state: ChannelState for math-based classification fallback
 
         Returns:
             DaemonResult with classification and analysis.
         """
         if not self.processor:
-            # Module not initialized — use same logic as hardcoded fallback
-            has_ene_signal = bool(_ENE_PATTERN.search(content)) or bool(
-                metadata and metadata.get("is_reply_to_ene")
-            )
-            classification = Classification.RESPOND if has_ene_signal else Classification.CONTEXT
-            result = DaemonResult(
-                classification=classification,
-                fallback_used=True,
-                model_used="not_initialized",
-            )
+            # Module not initialized — try math classifier, then regex
+            if channel_state is not None:
+                from nanobot.ene.conversation.signals import classify_with_state
+                cls, score, features = classify_with_state(
+                    content, sender_id, channel_state,
+                    is_at_mention=bool(metadata and metadata.get("is_at_mention")),
+                    is_reply_to_ene=bool(metadata and metadata.get("is_reply_to_ene")),
+                    is_in_ene_thread=bool(metadata and metadata.get("is_in_ene_thread")),
+                )
+                if is_dad and cls == "drop":
+                    cls = "context"
+                classification = Classification[cls.upper()]
+                top = max(features, key=features.get) if features else "none"
+                result = DaemonResult(
+                    classification=classification,
+                    confidence=score,
+                    classification_reason=f"math({score:.2f}): {top}={features.get(top, 0):.1f}",
+                    fallback_used=True,
+                    model_used="math_classifier",
+                )
+            else:
+                has_ene_signal = bool(_ENE_PATTERN.search(content)) or bool(
+                    metadata and metadata.get("is_reply_to_ene")
+                )
+                classification = Classification.RESPOND if has_ene_signal else Classification.CONTEXT
+                result = DaemonResult(
+                    classification=classification,
+                    fallback_used=True,
+                    model_used="not_initialized",
+                )
             self._last_result = result
             return result
 
@@ -182,6 +204,7 @@ class DaemonModule(EneModule):
             sender_id=sender_id,
             is_dad=is_dad,
             metadata=metadata,
+            channel_state=channel_state,
         )
 
         # Store for context injection

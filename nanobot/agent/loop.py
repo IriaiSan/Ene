@@ -697,12 +697,12 @@ class AgentLoop:
 
             else:
                 final_content = response.content
-                # Ene: if the model just said "done" (after a message tool),
-                # suppress it — the real response was already sent via the tool
-                if final_content and final_content.strip().lower() in ("done", "done."):
-                    # Check if message tool was used — if so, response already sent
-                    if "message" in tools_used:
-                        final_content = None
+                # Ene: if message tool already sent a response, suppress ANY
+                # follow-up text. The old check only caught "done" / "done."
+                # but the LLM often says things like "I've sent the message!"
+                # which would leak as a SECOND Discord message.
+                if message_sent:
+                    final_content = None
                 break
 
         return final_content, tools_used
@@ -729,19 +729,32 @@ class AgentLoop:
 
         return author
 
-    def _classify_message(self, msg: InboundMessage) -> str:
+    def _classify_message(self, msg: InboundMessage, channel_state=None) -> str:
         """Classify a single message: 'respond', 'context', or 'drop'.
 
-        Hardcoded fallback when daemon is unavailable.
-        - drop: muted users — silently removed before LLM sees them
-        - respond: mentions Ene, replies to Ene
-        - context: background chatter (including Dad talking to others)
+        Fallback when daemon is unavailable. Uses math classifier if
+        channel_state is available, otherwise simple regex.
         """
         caller_id = f"{msg.channel}:{msg.sender_id}"
 
         if self._is_muted(caller_id):
             return "drop"
 
+        # Math classifier path (preferred)
+        if channel_state is not None:
+            from nanobot.ene.conversation.signals import classify_with_state
+            cls, score, features = classify_with_state(
+                msg.content,
+                caller_id,
+                channel_state,
+                is_at_mention=bool(msg.metadata.get("is_at_mention")),
+                is_reply_to_ene=bool(msg.metadata.get("is_reply_to_ene")),
+                is_in_ene_thread=bool(msg.metadata.get("is_in_ene_thread")),
+            )
+            logger.debug(f"Math classify: {cls} ({score:.2f}) for {msg.metadata.get('author_name', caller_id)}")
+            return cls
+
+        # Regex fallback
         has_ene_signal = bool(_ENE_PATTERN.search(msg.content)) or msg.metadata.get("is_reply_to_ene")
         if has_ene_signal:
             return "respond"
@@ -973,6 +986,12 @@ class AgentLoop:
         context_msgs: list[InboundMessage] = []
         daemon_mod = self.module_registry.get_module("daemon")
 
+        # Ene: get channel state for math-based classification (no LLM)
+        _channel_state = None
+        conv_mod = self.module_registry.get_module("conversation_tracker")
+        if conv_mod and hasattr(conv_mod, "tracker") and conv_mod.tracker:
+            _channel_state = conv_mod.tracker.get_channel_state(channel_key)
+
         for m in messages:
             caller_id = f"{m.channel}:{m.sender_id}"
             is_dad = caller_id in DAD_IDS
@@ -990,6 +1009,7 @@ class AgentLoop:
                         sender_id=caller_id,
                         is_dad=is_dad,
                         metadata=m.metadata,
+                        channel_state=_channel_state,
                     )
                     # Store daemon result on message metadata for context injection
                     m.metadata["_daemon_result"] = daemon_result
@@ -1032,7 +1052,7 @@ class AgentLoop:
                     logger.debug(f"Daemon failed for message, falling back: {e}")
 
             # Fallback: hardcoded classification (daemon unavailable or failed)
-            tier = self._classify_message(m)
+            tier = self._classify_message(m, _channel_state)
             if tier == "respond":
                 respond_msgs.append(m)
             elif tier == "context":
@@ -1929,6 +1949,14 @@ Write the summary:"""
 
         # Ene: notify modules that a message was processed
         asyncio.create_task(self.module_registry.notify_message(msg, responded=True))
+
+        # Ene: update channel state — Ene responded, so recency/adjacency data is fresh
+        import time as _ene_time
+        _conv_mod = self.module_registry.get_module("conversation_tracker")
+        if _conv_mod and hasattr(_conv_mod, "tracker") and _conv_mod.tracker:
+            _ch_key = f"{msg.channel}:{msg.chat_id}" if msg.chat_id else msg.channel
+            _ch_state = _conv_mod.tracker.get_channel_state(_ch_key)
+            _ch_state.update("ene", _ene_time.time(), is_ene=True)
 
         # Ene: clean response (strip leaks, enforce length, etc.)
         cleaned = self._ene_clean_response(final_content, msg)

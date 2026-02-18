@@ -27,6 +27,7 @@ from .models import (
     ThreadMessage,
 )
 from .signals import (
+    ChannelState,
     compute_thread_score,
     extract_keywords,
     score_against_pending,
@@ -70,9 +71,22 @@ class ConversationTracker:
         # Dirty flag for lazy saves
         self._dirty = False
 
+        # Per-channel state for math-based relevance scoring (no LLM)
+        self._channel_states: dict[str, ChannelState] = {}
+
     def set_social_registry(self, registry: PersonRegistry | None) -> None:
         """Inject social registry for display name resolution."""
         self._social_registry = registry
+
+    def get_channel_state(self, channel_key: str) -> ChannelState:
+        """Get or create per-channel state for math-based classification.
+
+        The ChannelState tracks Ene's last activity, per-author interaction
+        history, message rate, and conversation state — all without LLM calls.
+        """
+        if channel_key not in self._channel_states:
+            self._channel_states[channel_key] = ChannelState(channel_key)
+        return self._channel_states[channel_key]
 
     # ── Persistence ──────────────────────────────────────────────────
 
@@ -448,6 +462,17 @@ class ConversationTracker:
                     self._dirty = True
 
             # If thread_id is None, message went to pending (handled in _assign_message)
+
+        # ── Update per-channel state for math-based classification ──
+        channel_state = self.get_channel_state(channel_key)
+        for msg, classification in all_msgs:
+            ts = msg.timestamp.timestamp() if hasattr(msg.timestamp, "timestamp") else float(msg.timestamp)
+            channel_state.update(
+                sender_id=f"{msg.channel}:{msg.sender_id}",
+                timestamp=ts,
+                is_ene=False,
+                interacted_with_ene=(classification == "respond"),
+            )
 
     def build_context(
         self,
