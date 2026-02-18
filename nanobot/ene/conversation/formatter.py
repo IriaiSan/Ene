@@ -191,7 +191,7 @@ def _select_trigger(
 
     Priority: Dad > first Ene mention/reply > last respond message.
     """
-    from nanobot.agent.loop import DAD_IDS
+    from nanobot.agent.security import DAD_IDS
 
     if not respond_msgs:
         return (context_msgs or respond_msgs)[-1]
@@ -234,8 +234,14 @@ def build_threaded_context(
             for t in threads.values()
             if t.channel_key == channel_key and t.state != DEAD
         ]
-        # Only use fast path if there are no active threads or pending to show
-        if not channel_threads and not channel_pending:
+        # Only use fast path if there are no threads with new messages and no pending.
+        # If any thread has new messages since last_shown_index, we must format them
+        # so the LLM gets the full context (not just the raw single message).
+        threads_with_new = [
+            t for t in channel_threads
+            if len(t.messages) > t.last_shown_index
+        ]
+        if not threads_with_new and not channel_pending:
             return respond_msgs[0]
 
     # Gather threads for this channel

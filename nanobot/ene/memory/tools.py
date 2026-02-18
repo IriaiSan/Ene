@@ -85,12 +85,10 @@ class SaveMemoryTool(Tool):
         entry_id = core.add_entry(section, memory, importance=importance)
 
         if entry_id is None:
-            remaining = core.budget_remaining
-            return (
-                f"Error: Could not save — budget exceeded. "
-                f"You have {remaining} tokens remaining. "
-                f"Edit or delete existing entries to make room."
+            reason = getattr(core, "_last_add_error", None) or (
+                f"Budget exceeded. {core.budget_remaining} global tokens remaining."
             )
+            return f"Error: Could not save — {reason}"
 
         return (
             f"Saved to {section} [id:{entry_id}]. "

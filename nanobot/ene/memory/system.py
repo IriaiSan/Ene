@@ -178,13 +178,22 @@ class MemorySystem:
     # ── Diary ──────────────────────────────────────────────
 
     def _load_recent_diary(self) -> str:
-        """Load the last N days of diary entries."""
+        """Load the last N days of diary entries, capped at MAX_DIARY_ENTRIES.
+
+        Strips participant= metadata lines (useful for search, not for LLM context)
+        and caps total entries to avoid context bloat from busy servers.
+        """
+        import re
+        from collections import OrderedDict
         from datetime import datetime, timedelta
+
+        MAX_DIARY_ENTRIES = 7  # Hard cap on entries in system prompt
 
         if not self._diary_dir.exists():
             return ""
 
-        entries: list[str] = []
+        # Collect individual entries across days (most recent day first)
+        all_entries: list[tuple[str, str]] = []  # (day_str, entry_text)
         today = datetime.now().date()
 
         for days_ago in range(self._diary_context_days):
@@ -194,11 +203,38 @@ class MemorySystem:
                 try:
                     content = diary_file.read_text(encoding="utf-8").strip()
                     if content:
-                        entries.append(f"### {day.isoformat()}\n{content}")
+                        # Strip participant= metadata — useful for search, not for LLM
+                        content = re.sub(
+                            r'^\[[\d:]+\] participants=.*$', '',
+                            content, flags=re.MULTILINE,
+                        )
+                        content = re.sub(r'\n{3,}', '\n\n', content).strip()
+                        if content:
+                            # Split into individual entries (separated by blank lines)
+                            day_entries = [
+                                e.strip() for e in content.split('\n\n') if e.strip()
+                            ]
+                            for entry in day_entries:
+                                all_entries.append((day.isoformat(), entry))
                 except Exception as e:
                     logger.error(f"Failed to read diary {diary_file}: {e}")
 
-        return "\n\n".join(entries)
+        if not all_entries:
+            return ""
+
+        # Keep only the last MAX_DIARY_ENTRIES entries (most recent)
+        capped = all_entries[-MAX_DIARY_ENTRIES:]
+
+        # Group back by day for display
+        by_day: OrderedDict[str, list[str]] = OrderedDict()
+        for day_str, entry in capped:
+            by_day.setdefault(day_str, []).append(entry)
+
+        parts = []
+        for day_str, day_entries in by_day.items():
+            parts.append(f"### {day_str}\n" + "\n\n".join(day_entries))
+
+        return "\n\n".join(parts)
 
     def write_diary_entry(self, content: str) -> None:
         """Append a diary entry for today."""

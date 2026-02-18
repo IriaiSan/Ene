@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 def _sanitize_dad_ids(content: str, caller_id: str) -> str:
     """Import and call the sanitizer from loop.py if available."""
     try:
-        from nanobot.agent.loop import _sanitize_dad_ids as sanitize
+        from nanobot.agent.security import sanitize_dad_ids as sanitize
 
         return sanitize(content, caller_id)
     except ImportError:

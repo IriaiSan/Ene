@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ene — Live Trace</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/live.css">
+</head>
+<body class="live-body">
+    <!-- Header -->
+    <header id="status-bar">
+        <div class="status-left">
+            <span class="logo">Ene Live Trace</span>
+            <a href="/" class="nav-link">Metrics</a>
+            <span id="connection-badge" class="badge">connecting</span>
+        </div>
+        <div class="status-right">
+            <button id="btn-hard-reset" class="ctrl-btn ctrl-btn-danger" title="Drop all queues, clear session, fresh start">⚡ Hard Reset</button>
+            <button id="btn-clear" class="ctrl-btn" title="Clear timeline">Clear</button>
+            <button id="btn-pause" class="ctrl-btn" title="Pause auto-scroll">⏸ Pause</button>
+            <span id="event-count">0 events</span>
+        </div>
+    </header>
+
+    <div class="live-layout">
+        <!-- Left Panel: Queue State -->
+        <aside id="state-panel">
+            <section class="state-section">
+                <h3>Pipeline State</h3>
+                <div class="state-grid">
+                    <div class="state-item">
+                        <span class="state-label">Buffers</span>
+                        <span class="state-value" id="st-buffers">0</span>
+                    </div>
+                    <div class="state-item">
+                        <span class="state-label">Queued</span>
+                        <span class="state-value" id="st-queues">0</span>
+                    </div>
+                    <div class="state-item">
+                        <span class="state-label">Processing</span>
+                        <span class="state-value" id="st-processing">—</span>
+                    </div>
+                    <div class="state-item">
+                        <span class="state-label">Muted</span>
+                        <span class="state-value" id="st-muted">0</span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="state-section">
+                <h3>Active Batch</h3>
+                <div id="active-batch" class="batch-info">
+                    <span class="muted">No active batch</span>
+                </div>
+            </section>
+
+            <section class="state-section">
+                <h3>Legend</h3>
+                <div class="legend">
+                    <div class="legend-item"><span class="dot dot-arrival"></span> Arrival</div>
+                    <div class="legend-item"><span class="dot dot-classify"></span> Classify</div>
+                    <div class="legend-item"><span class="dot dot-llm"></span> LLM</div>
+                    <div class="legend-item"><span class="dot dot-tool"></span> Tool</div>
+                    <div class="legend-item"><span class="dot dot-output"></span> Output</div>
+                    <div class="legend-item"><span class="dot dot-error"></span> Error</div>
+                </div>
+            </section>
+        </aside>
+
+        <!-- Right Panel: Event Timeline -->
+        <main id="timeline">
+            <div id="events-container">
+                <div class="empty-state">
+                    <p>Waiting for events...</p>
+                    <p class="muted">Send a message on Discord to see the processing pipeline live.</p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Prompt Log — full prompt/response content for debugging -->
+    <div id="prompt-log-section">
+        <div id="prompt-log-header">
+            <span class="prompt-log-title">Prompt Log</span>
+            <span class="prompt-log-subtitle">Full daemon + Ene prompts and responses — every word</span>
+            <div class="prompt-log-controls">
+                <span id="prompt-conn-badge" class="badge">connecting</span>
+                <button id="btn-prompt-clear" class="ctrl-btn" title="Clear prompt log">Clear</button>
+                <button id="btn-prompt-pause" class="ctrl-btn" title="Pause auto-scroll">⏸ Pause</button>
+                <span id="prompt-count">0 entries</span>
+            </div>
+        </div>
+        <div id="prompt-log-body">
+            <div id="prompt-entries">
+                <div class="empty-state">
+                    <p>Waiting for prompts...</p>
+                    <p class="muted">Daemon and Ene prompts will appear here in full.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/live.js"></script>
+</body>
+</html>

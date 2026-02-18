@@ -222,14 +222,13 @@ class TestHybridHistory:
         session = self._make_session(30)
         summary = "We discussed cats and coding."
         history = session.get_hybrid_history(recent_count=20, summary=summary)
-        # 2 (summary pair) + 20 (recent) = 22
-        assert len(history) == 22
+        # 1 (summary as user message) + 20 (recent) = 21
+        # No synthetic assistant acknowledgement — that was removed to prevent
+        # the model from skipping the summary (see session/manager.py comment).
+        assert len(history) == 21
         # First message should be the summary
         assert "[Earlier conversation summary]" in history[0]["content"]
         assert "cats and coding" in history[0]["content"]
-        # Second should be ack
-        assert history[1]["role"] == "assistant"
-        assert "remember" in history[1]["content"].lower()
 
     def test_summary_position_before_recent(self):
         """Summary should come BEFORE recent messages (Lost in the Middle pattern)."""
@@ -263,10 +262,11 @@ class TestHybridHistory:
         assert history == []
 
     def test_summary_with_empty_recent(self):
-        """Summary with no messages should return just summary pair."""
+        """Summary with no messages should return just the summary message."""
         session = Session(key="test:empty")
         history = session.get_hybrid_history(recent_count=20, summary="Old stuff.")
-        assert len(history) == 2
+        # No synthetic assistant ack — just the summary user message
+        assert len(history) == 1
         assert "Old stuff" in history[0]["content"]
 
 

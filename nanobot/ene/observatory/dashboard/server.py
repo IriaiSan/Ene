@@ -16,6 +16,7 @@ from loguru import logger
 from nanobot.ene.observatory.dashboard.api import create_api_routes
 
 if TYPE_CHECKING:
+    from nanobot.agent.live_trace import LiveTracer
     from nanobot.ene.observatory.store import MetricsStore
     from nanobot.ene.observatory.health import HealthMonitor
     from nanobot.ene.observatory.reporter import ReportGenerator
@@ -48,6 +49,9 @@ class DashboardServer:
         self._port = port
         self._runner: web.AppRunner | None = None
         self._app: web.Application | None = None
+        self._live_tracer: "LiveTracer | None" = None
+        self._set_live_tracer_fn = None  # Set by _create_app, used by set_live_tracer
+        self._set_reset_callback_fn = None  # Set by _create_app, used by set_reset_callback
 
     def _create_app(self) -> web.Application:
         """Create the aiohttp application."""
@@ -58,15 +62,16 @@ class DashboardServer:
         async def cors_middleware(request: web.Request, handler):
             response = await handler(request)
             response.headers["Access-Control-Allow-Origin"] = "*"
-            response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
             response.headers["Access-Control-Allow-Headers"] = "Content-Type"
             return response
 
         app.middlewares.append(cors_middleware)
 
-        # API routes
-        api_routes = create_api_routes(
-            self._store, self._health, self._reporter
+        # API routes (returns routes + setters for late-binding LiveTracer and reset callback)
+        api_routes, self._set_live_tracer_fn, self._set_reset_callback_fn = create_api_routes(
+            self._store, self._health, self._reporter,
+            live_tracer=self._live_tracer,
         )
         app.router.add_routes(api_routes)
 
@@ -76,12 +81,37 @@ class DashboardServer:
             async def index(request: web.Request) -> web.FileResponse:
                 return web.FileResponse(STATIC_DIR / "index.html")
 
+            # Serve live.html at /live
+            async def live_page(request: web.Request) -> web.FileResponse:
+                return web.FileResponse(STATIC_DIR / "live.html")
+
             app.router.add_get("/", index)
+            app.router.add_get("/live", live_page)
             app.router.add_static("/static/", STATIC_DIR, name="static")
         else:
             logger.warning(f"Dashboard static dir not found: {STATIC_DIR}")
 
         return app
+
+    def set_live_tracer(self, tracer: "LiveTracer") -> None:
+        """Attach a LiveTracer for the real-time processing dashboard.
+
+        Updates both the instance attribute and the mutable closure ref
+        inside the API routes, so SSE endpoints see the tracer immediately.
+        """
+        self._live_tracer = tracer
+        if self._set_live_tracer_fn:
+            self._set_live_tracer_fn(tracer)
+
+    def set_reset_callback(self, cb) -> None:
+        """Attach the agent loop hard-reset callback.
+
+        Called by AgentLoop after initialization. The callback clears all
+        debounce buffers, channel queues, timers, and invalidates the active
+        session so the next message starts completely fresh.
+        """
+        if self._set_reset_callback_fn:
+            self._set_reset_callback_fn(cb)
 
     async def start(self) -> None:
         """Start the dashboard server."""

@@ -118,8 +118,12 @@ class CoreMemory:
 
         Returns:
             Entry ID on success, None if over budget.
+        Sets self._last_add_error to a descriptive reason on failure.
         """
+        self._last_add_error: str | None = None
+
         if section not in self._data.get("sections", {}):
+            self._last_add_error = f"Unknown section '{section}'."
             return None
 
         sec = self._data["sections"][section]
@@ -128,10 +132,20 @@ class CoreMemory:
         # Check section budget
         sec_tokens = sum(_count_tokens(e["content"]) for e in sec["entries"])
         if sec_tokens + new_tokens > sec["max_tokens"]:
+            self._last_add_error = (
+                f"Section '{section}' is full "
+                f"({sec_tokens}/{sec['max_tokens']} tokens, need {new_tokens} more). "
+                f"Delete or edit entries in this section to make room."
+            )
             return None
 
         # Check global budget
         if self._data.get("token_count", 0) + new_tokens > self.token_budget:
+            self._last_add_error = (
+                f"Global budget full "
+                f"({self._data.get('token_count', 0)}/{self.token_budget} tokens). "
+                f"Delete entries from any section to make room."
+            )
             return None
 
         entry_id = _short_id()
@@ -266,7 +280,11 @@ class CoreMemory:
             entries = sec.get("entries", [])
             if not entries:
                 continue
-            lines.append(f"### {sec['label']}")
+            # Label context section to signal it's background, not current conversation
+            if sec_name == "context":
+                lines.append(f"### {sec['label']} (background notes, NOT current conversation)")
+            else:
+                lines.append(f"### {sec['label']}")
             for entry in entries:
                 lines.append(f"- {entry['content']} [id:{entry['id']}]")
             lines.append("")  # blank line between sections

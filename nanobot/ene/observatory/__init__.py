@@ -150,7 +150,28 @@ class ObservatoryModule(EneModule):
                 logger.warning(f"Dashboard server failed to start: {e}")
                 self._dashboard = None
 
+        self._live_tracer = None  # Set by AgentLoop after init
         logger.info(f"Observatory initialized: {db_path}")
+
+    def set_live_tracer(self, tracer: "Any") -> None:
+        """Attach a LiveTracer for the real-time processing dashboard.
+
+        Called by AgentLoop._initialize_ene_modules() after module init.
+        """
+        self._live_tracer = tracer
+        if self._dashboard:
+            self._dashboard.set_live_tracer(tracer)
+            logger.debug("Wired LiveTracer → dashboard")
+
+    def set_reset_callback(self, cb: "Any") -> None:
+        """Attach the agent loop hard-reset callback to the dashboard.
+
+        Called by AgentLoop._initialize_ene_modules() after module init.
+        The callback is invoked when the dashboard Hard Reset button is clicked.
+        """
+        if self._dashboard:
+            self._dashboard.set_reset_callback(cb)
+            logger.debug("Wired hard_reset callback → dashboard")
 
     async def _send_alert(self, alert: HealthAlert) -> None:
         """Send a health alert to Dad via DM."""

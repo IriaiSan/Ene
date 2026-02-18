@@ -4,6 +4,120 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-18q] — Live Processing Dashboard
+
+### Added — Real-Time Message Processing Dashboard
+- New page at `/live` on the observatory dashboard (port 18791)
+- Streams every step of message processing in real-time via SSE
+- **LiveTracer** (`nanobot/agent/live_trace.py`): thread-safe ring buffer (500 events) with async SSE push
+- **17 event types** covering the entire pipeline:
+  - `msg_arrived`, `rate_limited`, `debounce_add`, `debounce_flush`
+  - `daemon_result`, `classification`, `dad_promotion`, `merge_complete`
+  - `should_respond`, `llm_call`, `llm_response`, `tool_exec`
+  - `loop_break`, `response_clean`, `response_sent`, `mute_event`, `error`
+- Two-column layout: live pipeline state (left) + scrolling event timeline (right)
+- Color-coded events: green (arrivals), blue (classification), purple (LLM), orange (tools), cyan (output), red (errors)
+- Auto-scroll follows events, pauses on scroll up, resumes on scroll to bottom
+- Connection badge shows SSE status with auto-reconnect
+- Pipeline state panel shows: buffer sizes, queue depth, processing status, muted count, active batch info
+- Nav links between Metrics page and Live Trace page
+
+### Files Created
+- `nanobot/agent/live_trace.py` — LiveTracer class
+- `nanobot/ene/observatory/dashboard/static/live.html` — page layout
+- `nanobot/ene/observatory/dashboard/static/live.js` — SSE handler + event rendering
+- `nanobot/ene/observatory/dashboard/static/live.css` — styles
+
+### Files Modified
+- `nanobot/agent/loop.py` — import LiveTracer, create in __init__, emit events at 15+ integration points, wire to observatory
+- `nanobot/ene/observatory/dashboard/server.py` — accept live_tracer, add /live route, set_live_tracer() method
+- `nanobot/ene/observatory/dashboard/api.py` — add /api/live SSE endpoint, /api/live/state REST endpoint
+- `nanobot/ene/observatory/__init__.py` — set_live_tracer() to wire tracer to dashboard
+- `nanobot/ene/observatory/dashboard/static/index.html` — nav link to Live Trace
+- `nanobot/ene/observatory/dashboard/static/style.css` — nav-link style
+- `docs/CHANGELOG.md` — this entry
+
+---
+
+## [2026-02-18p] — loop.py Phase 1 Split + Error Leak Fix
+
+### Refactored — loop.py Incremental Split (WHITELIST S1, S3)
+- Extracted 3 focused modules from loop.py (was 2,287 lines → now 1,705 lines, -582):
+  - `nanobot/agent/security.py` (~277 lines) — DAD_IDS, RESTRICTED_TOOLS, ENE_PATTERN, impersonation detection, rate limiting, muting, auto-mute, MuteUserTool
+  - `nanobot/agent/response_cleaning.py` (~166 lines) — clean_response(), condense_for_session(), all output sanitization
+  - `nanobot/agent/message_merging.py` (~259 lines) — format_author(), classify_message(), merge_messages_tiered(), merge_messages()
+- All extracted functions are pure (no instance state) — testable, replaceable, modular
+- AgentLoop methods become thin wrappers delegating to the extracted modules
+- Updated imports in `nanobot/ene/conversation/tracker.py` and `nanobot/ene/conversation/formatter.py`
+- Zero behavior changes — pure refactor
+
+### Fixed — LLM Error Messages Leaking to Discord
+- Added error message stripping to response_cleaning.py:
+  - `Error calling LLM:...` — caught and stripped
+  - `APIError:`, `RateLimitError:`, `AuthenticationError:` — caught and stripped
+- Previously these leaked as visible Discord messages when OpenRouter hit rate limits
+
+### Files Modified
+- `nanobot/agent/security.py` — NEW
+- `nanobot/agent/response_cleaning.py` — NEW
+- `nanobot/agent/message_merging.py` — NEW
+- `nanobot/agent/loop.py` — removed extracted code, added imports + thin wrappers
+- `nanobot/ene/conversation/tracker.py` — updated import path
+- `nanobot/ene/conversation/formatter.py` — updated import path
+- `docs/CHANGELOG.md` — this entry
+- `docs/WHITELIST.md` — created in previous session
+
+---
+
+## [2026-02-18o] — Architecture Visualisation + /new Gate
+
+### Added — Interactive Architecture Map
+- `docs/architecture.html` — self-contained D3.js radial tree visualisation
+- Ene at center, 8 categories radiating out (Core Intelligence, Communication, Memory, Social, Security, Monitoring, Infrastructure, Future)
+- 3 levels deep: category → subcategory → individual feature
+- Color-coded: green (working), amber (planned), red (missing/gap)
+- Interactive: click to collapse/expand, hover for details, scroll to zoom, drag to pan
+- Stats bar shows counts of working/planned/missing features
+- JSON data block at top of file — edit that to update the map
+
+### Fixed — /new Command Security
+- `/new` session reset command now gated to Dad only (DAD_IDS check)
+- Non-Dad users who type `/new` are silently ignored
+
+### Files Modified
+- `docs/architecture.html` — NEW interactive visualisation
+- `nanobot/agent/loop.py` — /new Dad gate
+- `docs/CHANGELOG.md` — this entry
+- `MEMORY.md` — added architecture.html maintenance rule, updated test count
+
+---
+
+## [2026-02-18n] — Fix Dual-Source Message Duplication
+
+### Fixed — Session/Tracker Content Overlap
+- **Root cause**: Messages were stored in BOTH session history (via `add_message()`) AND
+  conversation tracker (via `ingest_batch()` + `build_context()`). Both fed into
+  `context.build_messages()`, causing the LLM to see old messages twice and re-respond.
+- **Fix**: Conversation tracker is now the sole source of "what people said".
+  Session history stores only lightweight markers + Ene's own responses.
+- 4 locations changed in `nanobot/agent/loop.py`:
+  1. `_process_batch` lurk path: removed raw message storage entirely (tracker has them)
+  2. `_process_message` respond path: stores `[name and others — N messages, M threads]` marker
+  3. `_process_message` tool-sent path: same lightweight marker pattern
+  4. `_process_message` lurk path: same lightweight marker pattern
+- Single-message (non-batched, non-threaded) still stores condensed content as before
+
+### Impact
+- Eliminates token waste from duplicated content in every LLM prompt
+- Stops Ene from re-responding to old thread messages she already addressed
+- Existing session files should be cleared (`/new` per channel) after deploy
+
+### Files Modified
+- `nanobot/agent/loop.py` — 4 session storage locations updated
+- `docs/CHANGELOG.md` — this entry
+
+---
+
 ## [2026-02-18m] — Math Classifier + Duplicate Fix + Research
 
 ### Added — Naive Bayes Relevance Classifier (No LLM)
