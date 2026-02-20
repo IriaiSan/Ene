@@ -61,7 +61,7 @@ class LLMCallRecord:
 
 # ── Schema ──────────────────────────────────────────────────
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 -- Every LLM call
@@ -131,6 +131,18 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     value TEXT
 );
 
+-- Module-level structured events (per-module observability)
+CREATE TABLE IF NOT EXISTS module_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp       TEXT NOT NULL,
+    trace_id        TEXT,
+    module          TEXT NOT NULL,
+    event_type      TEXT NOT NULL,
+    channel_key     TEXT DEFAULT '',
+    data            TEXT DEFAULT '{}',
+    duration_ms     INTEGER
+);
+
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_calls_timestamp ON llm_calls(timestamp);
 CREATE INDEX IF NOT EXISTS idx_calls_model ON llm_calls(model);
@@ -138,6 +150,9 @@ CREATE INDEX IF NOT EXISTS idx_calls_caller ON llm_calls(caller_id);
 CREATE INDEX IF NOT EXISTS idx_calls_type ON llm_calls(call_type);
 CREATE INDEX IF NOT EXISTS idx_calls_experiment ON llm_calls(experiment_id);
 CREATE INDEX IF NOT EXISTS idx_exp_results_exp ON experiment_results(experiment_id);
+CREATE INDEX IF NOT EXISTS idx_module_events_ts ON module_events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_module_events_module ON module_events(module, event_type);
+CREATE INDEX IF NOT EXISTS idx_module_events_trace ON module_events(trace_id);
 """
 
 
@@ -722,6 +737,264 @@ class MetricsStore:
             )
             row = cur.fetchone()
             return round(row["avg"], 6) if row else 0.0
+
+    # ── Module Events ──────────────────────────────────────
+
+    def record_module_event(
+        self,
+        timestamp: str,
+        module: str,
+        event_type: str,
+        channel_key: str = "",
+        data: dict[str, Any] | None = None,
+        duration_ms: int | None = None,
+        trace_id: str | None = None,
+    ) -> int:
+        """Record a module-level event. Returns row ID."""
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO module_events
+                   (timestamp, trace_id, module, event_type, channel_key, data, duration_ms)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    timestamp,
+                    trace_id,
+                    module,
+                    event_type,
+                    channel_key,
+                    json.dumps(data or {}),
+                    duration_ms,
+                ),
+            )
+            return cur.lastrowid or 0
+
+    def get_module_events(
+        self,
+        module: str,
+        event_type: str | None = None,
+        hours: int = 24,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Get recent events for a module, optionally filtered by event_type."""
+        since = (datetime.now() - timedelta(hours=hours)).isoformat()
+        if event_type:
+            query = """SELECT * FROM module_events
+                       WHERE module = ? AND event_type = ? AND timestamp >= ?
+                       ORDER BY id DESC LIMIT ?"""
+            params: tuple = (module, event_type, since, limit)
+        else:
+            query = """SELECT * FROM module_events
+                       WHERE module = ? AND timestamp >= ?
+                       ORDER BY id DESC LIMIT ?"""
+            params = (module, since, limit)
+
+        with self._cursor() as cur:
+            cur.execute(query, params)
+            results = []
+            for row in cur.fetchall():
+                d = dict(row)
+                d["data"] = json.loads(d["data"]) if d["data"] else {}
+                results.append(d)
+            return results
+
+    def get_module_summary(self, module: str, hours: int = 24) -> dict[str, Any]:
+        """Get event counts by type and avg durations for a module."""
+        since = (datetime.now() - timedelta(hours=hours)).isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT event_type,
+                     COUNT(*) as count,
+                     COALESCE(AVG(duration_ms), 0) as avg_duration_ms,
+                     COALESCE(MAX(duration_ms), 0) as max_duration_ms
+                   FROM module_events
+                   WHERE module = ? AND timestamp >= ?
+                   GROUP BY event_type
+                   ORDER BY count DESC""",
+                (module, since),
+            )
+            by_type = {
+                row["event_type"]: {
+                    "count": row["count"],
+                    "avg_duration_ms": round(row["avg_duration_ms"], 1),
+                    "max_duration_ms": row["max_duration_ms"],
+                }
+                for row in cur.fetchall()
+            }
+
+            cur.execute(
+                """SELECT COUNT(*) as total FROM module_events
+                   WHERE module = ? AND timestamp >= ?""",
+                (module, since),
+            )
+            total = cur.fetchone()["total"]
+
+        return {
+            "module": module,
+            "hours": hours,
+            "total_events": total,
+            "by_type": by_type,
+        }
+
+    def get_trace_events(self, trace_id: str) -> list[dict[str, Any]]:
+        """Get all module events for a single message batch (cross-module trace)."""
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT * FROM module_events
+                   WHERE trace_id = ?
+                   ORDER BY id ASC""",
+                (trace_id,),
+            )
+            results = []
+            for row in cur.fetchall():
+                d = dict(row)
+                d["data"] = json.loads(d["data"]) if d["data"] else {}
+                results.append(d)
+            return results
+
+    def get_classification_stats(self, hours: int = 24) -> dict[str, Any]:
+        """Get classification distribution and feature stats from signals module events."""
+        since = (datetime.now() - timedelta(hours=hours)).isoformat()
+        with self._cursor() as cur:
+            # Get all scored events
+            cur.execute(
+                """SELECT data FROM module_events
+                   WHERE module = 'signals' AND event_type = 'scored'
+                     AND timestamp >= ?""",
+                (since,),
+            )
+            rows = cur.fetchall()
+
+        if not rows:
+            return {"hours": hours, "total": 0, "distribution": {}, "feature_averages": {}}
+
+        # Aggregate classification distribution and feature averages
+        distribution: dict[str, int] = {}
+        feature_sums: dict[str, float] = {}
+        feature_counts: dict[str, int] = {}
+        confidence_sum = 0.0
+        override_count = 0
+
+        for row in rows:
+            data = json.loads(row["data"]) if row["data"] else {}
+            result = data.get("result", "unknown")
+            distribution[result] = distribution.get(result, 0) + 1
+            confidence_sum += data.get("confidence", 0.0)
+
+            features = data.get("features", {})
+            for feat, val in features.items():
+                feature_sums[feat] = feature_sums.get(feat, 0.0) + val
+                feature_counts[feat] = feature_counts.get(feat, 0) + 1
+
+        total = len(rows)
+        feature_averages = {
+            feat: round(feature_sums[feat] / feature_counts[feat], 3)
+            for feat in feature_sums
+        }
+
+        # Count overrides
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT COUNT(*) as cnt FROM module_events
+                   WHERE module = 'signals' AND event_type = 'override'
+                     AND timestamp >= ?""",
+                (since,),
+            )
+            override_count = cur.fetchone()["cnt"]
+
+        return {
+            "hours": hours,
+            "total": total,
+            "distribution": distribution,
+            "avg_confidence": round(confidence_sum / total, 3) if total else 0.0,
+            "feature_averages": feature_averages,
+            "override_count": override_count,
+        }
+
+    def get_thread_stats(self, hours: int = 24) -> dict[str, Any]:
+        """Get thread lifecycle stats from tracker module events."""
+        since = (datetime.now() - timedelta(hours=hours)).isoformat()
+        with self._cursor() as cur:
+            # Thread creation count
+            cur.execute(
+                """SELECT COUNT(*) as cnt FROM module_events
+                   WHERE module = 'tracker' AND event_type = 'thread_created'
+                     AND timestamp >= ?""",
+                (since,),
+            )
+            created = cur.fetchone()["cnt"]
+
+            # State change events for lifespan/message stats
+            cur.execute(
+                """SELECT data FROM module_events
+                   WHERE module = 'tracker' AND event_type = 'thread_state_change'
+                     AND timestamp >= ?""",
+                (since,),
+            )
+            state_changes = cur.fetchall()
+
+            # Thread assignment methods
+            cur.execute(
+                """SELECT data FROM module_events
+                   WHERE module = 'tracker' AND event_type = 'thread_assigned'
+                     AND timestamp >= ?""",
+                (since,),
+            )
+            assignments = cur.fetchall()
+
+            # Context builds
+            cur.execute(
+                """SELECT data FROM module_events
+                   WHERE module = 'tracker' AND event_type = 'context_built'
+                     AND timestamp >= ?""",
+                (since,),
+            )
+            context_builds = cur.fetchall()
+
+        # Aggregate lifespan stats from DEAD state changes
+        lifespans: list[int] = []
+        message_counts: list[int] = []
+        for row in state_changes:
+            data = json.loads(row["data"]) if row["data"] else {}
+            if data.get("new_state") == "DEAD":
+                lifespan = data.get("lifespan_ms", 0)
+                if lifespan:
+                    lifespans.append(lifespan)
+                msg_count = data.get("message_count", 0)
+                if msg_count:
+                    message_counts.append(msg_count)
+
+        # Assignment method distribution
+        method_dist: dict[str, int] = {}
+        for row in assignments:
+            data = json.loads(row["data"]) if row["data"] else {}
+            method = data.get("method", "unknown")
+            method_dist[method] = method_dist.get(method, 0) + 1
+
+        # Average context stats
+        avg_active = 0.0
+        avg_background = 0.0
+        if context_builds:
+            active_sum = sum(
+                json.loads(r["data"]).get("active_threads", 0)
+                for r in context_builds if r["data"]
+            )
+            bg_sum = sum(
+                json.loads(r["data"]).get("background_threads", 0)
+                for r in context_builds if r["data"]
+            )
+            avg_active = round(active_sum / len(context_builds), 1)
+            avg_background = round(bg_sum / len(context_builds), 1)
+
+        return {
+            "hours": hours,
+            "threads_created": created,
+            "total_assignments": len(assignments),
+            "assignment_methods": method_dist,
+            "avg_lifespan_ms": round(sum(lifespans) / len(lifespans), 0) if lifespans else 0,
+            "avg_messages_per_thread": round(sum(message_counts) / len(message_counts), 1) if message_counts else 0,
+            "avg_active_threads": avg_active,
+            "avg_background_threads": avg_background,
+        }
 
     def vacuum(self) -> None:
         """Reclaim space. Run periodically (e.g., weekly)."""

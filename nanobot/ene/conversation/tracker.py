@@ -6,6 +6,7 @@ and delegates context formatting to the formatter module.
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,6 +39,16 @@ from .formatter import build_threaded_context
 if TYPE_CHECKING:
     from nanobot.bus.events import InboundMessage
     from nanobot.ene.social.person import PersonRegistry
+    from nanobot.ene.observatory.module_metrics import ModuleMetrics
+
+# Module-level metrics instance — set by set_metrics() during init.
+_metrics: "ModuleMetrics | None" = None
+
+
+def set_metrics(metrics: "ModuleMetrics") -> None:
+    """Attach a ModuleMetrics instance for tracker observability."""
+    global _metrics
+    _metrics = metrics
 
 
 def _sanitize_dad_ids(content: str, caller_id: str) -> str:
@@ -281,6 +292,22 @@ class ConversationTracker:
             f"Promoted pending -> thread {thread.thread_id[:8]} "
             f"({pending.message.author_name} + {new_msg.author_name})"
         )
+
+        if _metrics:
+            _metrics.record(
+                "pending_promoted",
+                channel_key,
+                thread_id=thread.thread_id[:8],
+                messages_accumulated=2,
+            )
+            _metrics.record(
+                "thread_created",
+                channel_key,
+                thread_id=thread.thread_id[:8],
+                trigger_message=new_msg.discord_msg_id,
+                assignment_method="pending_promote",
+            )
+
         return thread.thread_id
 
     def _add_pending(self, tm: ThreadMessage, channel_key: str) -> None:
@@ -357,14 +384,35 @@ class ConversationTracker:
 
         for thread in list(self._threads.values()):
             age = now - thread.updated_at
+            old_state = thread.state
 
             if thread.state == ACTIVE and age > THREAD_STALE_SECONDS:
                 thread.state = STALE
                 self._dirty = True
+                if _metrics:
+                    _metrics.record(
+                        "thread_state_change",
+                        thread.channel_key,
+                        thread_id=thread.thread_id[:8],
+                        old_state=old_state,
+                        new_state=STALE,
+                        message_count=len(thread.messages),
+                        lifespan_ms=int(age * 1000),
+                    )
 
             if thread.state in (STALE, RESOLVED) and age > THREAD_DEAD_SECONDS:
                 thread.state = DEAD
                 dead_threads.append(thread)
+                if _metrics:
+                    _metrics.record(
+                        "thread_state_change",
+                        thread.channel_key,
+                        thread_id=thread.thread_id[:8],
+                        old_state=old_state,
+                        new_state=DEAD,
+                        message_count=len(thread.messages),
+                        lifespan_ms=int(age * 1000),
+                    )
 
         # Remove dead threads from active tracking
         for dt in dead_threads:
@@ -428,6 +476,22 @@ class ConversationTracker:
 
             thread_id, already_added = self._assign_message(tm, channel_key, name_resolver)
 
+            # Record assignment event
+            if _metrics and thread_id and thread_id in self._threads:
+                # Determine assignment method from fast-path or scoring
+                method = "scoring"
+                if tm.reply_to_msg_id and tm.reply_to_msg_id in self._msg_to_thread:
+                    method = "reply_to"
+                elif already_added:
+                    method = "pending_promote"
+                _metrics.record(
+                    "thread_assigned",
+                    channel_key,
+                    thread_id=thread_id[:8],
+                    message_id=tm.discord_msg_id,
+                    method=method,
+                )
+
             if thread_id and thread_id in self._threads:
                 thread = self._threads[thread_id]
 
@@ -489,14 +553,43 @@ class ConversationTracker:
         Side effect: updates last_shown_index on displayed threads so
         follow-up turns only show NEW messages (avoids re-replay).
         """
-        result = build_threaded_context(
-            threads=self._threads,
-            pending=self._pending,
-            respond_msgs=respond_msgs,
-            context_msgs=context_msgs,
-            channel_key=channel_key,
-            format_author_fn=format_author_fn,
-        )
+        if _metrics:
+            with _metrics.span("context_built", channel_key) as span_data:
+                result = build_threaded_context(
+                    threads=self._threads,
+                    pending=self._pending,
+                    respond_msgs=respond_msgs,
+                    context_msgs=context_msgs,
+                    channel_key=channel_key,
+                    format_author_fn=format_author_fn,
+                )
+                # Populate span data with context stats
+                active_threads = sum(
+                    1 for t in self._threads.values()
+                    if t.channel_key == channel_key and t.state == ACTIVE and t.ene_involved
+                )
+                background_threads = sum(
+                    1 for t in self._threads.values()
+                    if t.channel_key == channel_key and t.state == ACTIVE and not t.ene_involved
+                )
+                span_data["active_threads"] = active_threads
+                span_data["background_threads"] = background_threads
+                span_data["total_messages"] = len(respond_msgs) + len(context_msgs)
+                span_data["new_since_last"] = sum(
+                    max(0, len(t.messages) - t.last_shown_index)
+                    for t in self._threads.values()
+                    if t.channel_key == channel_key and t.state in (ACTIVE, STALE)
+                )
+        else:
+            result = build_threaded_context(
+                threads=self._threads,
+                pending=self._pending,
+                respond_msgs=respond_msgs,
+                context_msgs=context_msgs,
+                channel_key=channel_key,
+                format_author_fn=format_author_fn,
+            )
+
         # build_threaded_context mutates last_shown_index on displayed threads
         self._dirty = True
         return result
@@ -517,7 +610,152 @@ class ConversationTracker:
             tid = self._msg_to_thread.get(mid)
             if tid and tid in self._threads:
                 self._threads[tid].ene_involved = True
+                self._threads[tid].ene_responded = True
                 self._dirty = True
+                if _metrics:
+                    _metrics.record(
+                        "ene_involved",
+                        self._threads[tid].channel_key,
+                        thread_id=tid[:8],
+                    )
+
+    def add_ene_response(self, msg: "InboundMessage", content: str) -> None:
+        """Inject Ene's cleaned response into the relevant thread(s).
+
+        Creates a ThreadMessage with is_ene=True so threads contain the full
+        conversation (user said X → Ene replied Y → user said Z). Without this,
+        threads only stored user messages and the LLM couldn't see its own
+        previous replies in thread context.
+
+        Called from loop.py after response cleaning, for both the direct return
+        path and the message tool path.
+        """
+        # Guard: never store garbled XML tool calls as Ene's response.
+        # DeepSeek sometimes outputs <functioninvoke> as raw text that
+        # slips past clean_response(). If it looks like XML, skip it.
+        if not content or re.search(
+            r'<\s*(?:function|invoke|parameter)', content, re.IGNORECASE
+        ):
+            logger.warning(
+                f"Skipping garbled Ene response ({len(content or '')} chars)"
+            )
+            return
+
+        msg_ids = msg.metadata.get("message_ids", [])
+        if not msg_ids:
+            msg_id = msg.metadata.get("message_id")
+            if msg_id:
+                msg_ids = [msg_id]
+
+        # Find which thread(s) this batch belongs to — deduplicate
+        thread_ids_seen: set[str] = set()
+        for mid in msg_ids:
+            tid = self._msg_to_thread.get(mid)
+            if tid and tid in self._threads and tid not in thread_ids_seen:
+                thread_ids_seen.add(tid)
+                thread = self._threads[tid]
+
+                ene_msg = ThreadMessage(
+                    discord_msg_id="",  # Ene's response doesn't have a Discord msg ID yet
+                    author_name="Ene",
+                    author_username="ene",
+                    author_id="ene:self",
+                    content=content,
+                    timestamp=time.time(),
+                    reply_to_msg_id=None,
+                    is_reply_to_ene=False,
+                    classification="respond",
+                    is_ene=True,
+                )
+                thread.add_message(ene_msg)
+                self._dirty = True
+                logger.debug(
+                    f"Added Ene response to thread {tid[:8]} "
+                    f"({len(content)} chars)"
+                )
+
+    def get_respond_threads(self, channel_key: str) -> list[Thread]:
+        """Get threads that need Ene's response, sorted by priority.
+
+        Priority: Dad-involved > @mention/reply > highest trust > most recent.
+        Only returns ACTIVE or STALE threads with ene_involved=True that have
+        new messages since last_shown_index.
+        """
+        from nanobot.agent.security import DAD_IDS
+
+        threads = []
+        for t in self._threads.values():
+            if (
+                t.channel_key == channel_key
+                and t.state in (ACTIVE, STALE)
+                and t.ene_involved
+                and len(t.messages) > t.last_shown_index  # Has new messages
+            ):
+                threads.append(t)
+
+        def priority_key(thread: Thread) -> tuple:
+            """Sort key: (has_dad, has_respond_msgs, recency)."""
+            has_dad = any(pid in DAD_IDS for pid in thread.participants)
+            has_respond = any(
+                m.classification == "respond" for m in thread.messages[thread.last_shown_index:]
+            )
+            return (has_dad, has_respond, thread.updated_at)
+
+        threads.sort(key=priority_key, reverse=True)
+        return threads
+
+    def mark_thread_responded(self, thread_id: str) -> None:
+        """Mark a specific thread as responded to by Ene.
+
+        Sets both ene_involved and ene_responded flags.
+        Called from the per-thread response loop after each thread's LLM call.
+        """
+        if thread_id in self._threads:
+            self._threads[thread_id].ene_involved = True
+            self._threads[thread_id].ene_responded = True
+            self._dirty = True
+
+    def get_batch_participant_ids(
+        self,
+        respond_msgs: list["InboundMessage"],
+        context_msgs: list["InboundMessage"],
+        channel_key: str,
+    ) -> list[str]:
+        """Collect unique platform IDs from the current batch + active Ene-involved threads.
+
+        Used by the Scene Brief (Phase 1) to build multi-person awareness context.
+        Returns deduplicated list with the primary (respond) sender first.
+        """
+        seen: set[str] = set()
+        ordered: list[str] = []
+
+        # First: respond message senders (these are primary targets)
+        for msg in respond_msgs:
+            pid = f"{msg.channel}:{msg.sender_id}"
+            if pid not in seen:
+                seen.add(pid)
+                ordered.append(pid)
+
+        # Second: context message senders
+        for msg in context_msgs:
+            pid = f"{msg.channel}:{msg.sender_id}"
+            if pid not in seen:
+                seen.add(pid)
+                ordered.append(pid)
+
+        # Third: participants from active Ene-involved threads in this channel
+        for thread in self._threads.values():
+            if (
+                thread.channel_key == channel_key
+                and thread.state in (ACTIVE, STALE)
+                and thread.ene_involved
+            ):
+                for pid in thread.participants:
+                    if pid not in seen:
+                        seen.add(pid)
+                        ordered.append(pid)
+
+        return ordered
 
     def archive_dead_threads(self) -> int:
         """Archive any dead threads. Returns count archived."""

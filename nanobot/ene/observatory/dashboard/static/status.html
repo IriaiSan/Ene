@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ene — Status</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/status.css?v=2">
+</head>
+<body class="status-body">
+    <!-- Header -->
+    <header id="status-bar">
+        <div class="status-left">
+            <span class="logo">Ene Status</span>
+            <a href="/" class="nav-link">Metrics</a>
+            <a href="/control" class="nav-link">Control</a>
+            <a href="/live" class="nav-link">Live Trace</a>
+            <span id="evt-badge" class="badge" title="Event stream">events: --</span>
+            <span id="prompt-badge" class="badge" title="Prompt stream">prompts: --</span>
+        </div>
+        <div class="status-right">
+            <span id="brain-indicator" class="badge" title="Brain status">🧠 --</span>
+        </div>
+    </header>
+
+    <!-- Zone 1: Thread Management (always visible) -->
+    <section id="zone-threads" class="zone">
+        <div class="zone-header">
+            <h2>Thread Management</h2>
+            <span class="timer" id="timer-threads">--</span>
+        </div>
+        <div id="thread-cards" class="thread-grid">
+            <div class="empty-state">No active threads</div>
+        </div>
+        <div id="pending-section" class="pending-section hidden">
+            <h4 class="pending-label">Pending (unassigned)</h4>
+            <div id="pending-cards" class="pending-grid"></div>
+        </div>
+    </section>
+
+    <hr class="zone-divider" />
+
+    <!-- Zone 2: Pipeline -->
+    <section id="zone-pipeline" class="zone">
+        <!-- Overlay for when pipeline is inactive -->
+        <div id="pipeline-overlay" class="pipeline-overlay">
+            <span id="pipeline-overlay-icon">⏸</span>
+            <span id="pipeline-overlay-msg">Idle — waiting for messages</span>
+        </div>
+
+        <!-- 2a: Message Intake -->
+        <div class="bento-row">
+            <div class="bento-card" id="section-intake">
+                <div class="bento-header">
+                    <h3>📨 Message Intake</h3>
+                    <span class="timer" id="timer-intake">--</span>
+                </div>
+                <div class="bento-body" id="body-intake">
+                    <div class="empty-state">Waiting for messages...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2b + 2c: Daemon Analysis + Classification (side by side) -->
+        <div class="bento-row bento-row-2col">
+            <div class="bento-card" id="section-daemon">
+                <div class="bento-header">
+                    <h3>👁 Daemon Analysis</h3>
+                    <span class="timer" id="timer-daemon">--</span>
+                </div>
+                <div class="bento-body" id="body-daemon">
+                    <div class="empty-state">Waiting for daemon...</div>
+                </div>
+            </div>
+            <div class="bento-card" id="section-classify">
+                <div class="bento-header">
+                    <h3>🏷 Classification &amp; Merge</h3>
+                    <span class="timer" id="timer-classify">--</span>
+                </div>
+                <div class="bento-body" id="body-classify">
+                    <div class="empty-state">Waiting for classification...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2d + 2f: Person & Scene + Memory & Diary (side by side) -->
+        <div class="bento-row bento-row-2col">
+            <div class="bento-card" id="section-person">
+                <div class="bento-header">
+                    <h3>👤 Person &amp; Scene</h3>
+                    <span class="timer" id="timer-person">--</span>
+                </div>
+                <div class="bento-body" id="body-person">
+                    <div class="empty-state">Waiting for sender info...</div>
+                </div>
+            </div>
+            <div class="bento-card" id="section-memory">
+                <div class="bento-header">
+                    <h3>🧠 Memory &amp; Diary</h3>
+                    <span class="timer" id="timer-memory">--</span>
+                </div>
+                <div class="bento-body" id="body-memory">
+                    <div class="empty-state">Waiting for memory data...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2e: Context (full width, tall) -->
+        <div class="bento-row">
+            <div class="bento-card" id="section-context">
+                <div class="bento-header">
+                    <h3>📋 LLM Context (Full Prompt)</h3>
+                    <span class="timer" id="timer-context">--</span>
+                </div>
+                <div class="bento-body" id="body-context">
+                    <div class="empty-state">Waiting for LLM prompt...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2g: LLM Processing -->
+        <div class="bento-row">
+            <div class="bento-card" id="section-llm">
+                <div class="bento-header">
+                    <h3>⚡ LLM Processing</h3>
+                    <span class="timer" id="timer-llm">--</span>
+                </div>
+                <div class="bento-body" id="body-llm">
+                    <div class="empty-state">Waiting for LLM call...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2h: Ene's Response -->
+        <div class="bento-row">
+            <div class="bento-card" id="section-response">
+                <div class="bento-header">
+                    <h3>💬 Ene's Response</h3>
+                    <span class="timer" id="timer-response">--</span>
+                </div>
+                <div class="bento-body" id="body-response">
+                    <div class="empty-state">Waiting for response...</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <script src="/static/status.js?v=3"></script>
+</body>
+</html>

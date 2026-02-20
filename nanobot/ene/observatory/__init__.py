@@ -173,6 +173,16 @@ class ObservatoryModule(EneModule):
             self._dashboard.set_reset_callback(cb)
             logger.debug("Wired hard_reset callback → dashboard")
 
+    def set_control_api_loop(self, loop: "Any") -> None:
+        """Wire the AgentLoop into the ControlAPI facade for the control panel.
+
+        Called by AgentLoop._initialize_ene_modules() after module init.
+        Enables all control panel endpoints (people, memory, threads, etc.).
+        """
+        if self._dashboard:
+            self._dashboard.set_control_api_loop(loop)
+            logger.debug("Wired AgentLoop → ControlAPI")
+
     async def _send_alert(self, alert: HealthAlert) -> None:
         """Send a health alert to Dad via DM."""
         if not self._bus:
@@ -223,15 +233,16 @@ class ObservatoryModule(EneModule):
                 logger.debug(f"Failed to send report via {channel}: {e}")
 
     def get_tools(self) -> list["Tool"]:
-        """Observatory tools — view_metrics, view_experiments (restricted to Dad)."""
+        """Observatory tools — view_metrics, view_experiments, view_module (restricted to Dad)."""
         if not self._store or not self._reporter:
             return []
 
-        from nanobot.ene.observatory.tools import ViewMetricsTool, ViewExperimentsTool
+        from nanobot.ene.observatory.tools import ViewMetricsTool, ViewExperimentsTool, ViewModuleTool
 
         return [
             ViewMetricsTool(self._store, self._reporter),
             ViewExperimentsTool(self._store),
+            ViewModuleTool(self._store),
         ]
 
     def get_context_block(self) -> str | None:

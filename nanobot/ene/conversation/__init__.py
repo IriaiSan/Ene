@@ -49,6 +49,7 @@ class ConversationTrackerModule(EneModule):
         self._ctx: EneContext | None = None
         self._save_cooldown = 60.0  # Save at most every 60s
         self._last_save = 0.0
+        self._focus_target: dict | None = None  # Phase 2.2: per-thread focus directive
 
     @property
     def name(self) -> str:
@@ -73,17 +74,39 @@ class ConversationTrackerModule(EneModule):
     def get_context_block(self) -> str | None:
         """Thread awareness instructions for the system prompt."""
         return (
-            "## Conversation Awareness\n"
-            "Messages are shown grouped by conversation thread.\n"
-            "Each thread has its own participants and topic.\n"
-            "When replying, use reply_to with the #msgN tag of the specific "
-            "message you want to reply to — this ensures your response threads "
-            "correctly in Discord.\n"
-            "If multiple threads need your attention, you can send multiple "
-            "messages using the message tool — one per thread.\n"
-            "Background threads are conversations you're not part of — "
-            "just awareness of what's happening around you.\n"
-            "Stale threads are winding down. Resolved threads got their answer."
+            "## How You See Conversations\n"
+            "You see everything happening in the channel — all threads, all people.\n"
+            "You are responding to one specific thread right now.\n"
+            "The Scene section shows who is around. The Focus section tells you "
+            "who you're talking to.\n"
+            "Background threads are your peripheral vision. You don't respond to them "
+            "directly, but you're aware they exist and can reference them if it feels "
+            "natural.\n"
+            "You send ONE message. Use reply_to with the #msgN tag of the message "
+            "you're responding to."
+        )
+
+    def set_focus_target(self, name: str, topic: str | None = None) -> None:
+        """Set the per-thread focus target for the next LLM call.
+
+        Called from loop.py before each per-thread _run_agent_loop().
+        The focus directive tells the LLM exactly who to respond to.
+        """
+        self._focus_target = {"name": name, "topic": topic or "their message"}
+
+    def clear_focus_target(self) -> None:
+        """Clear the focus target after a per-thread LLM call completes."""
+        self._focus_target = None
+
+    def get_context_block_for_message(self, message: str) -> str | None:
+        """Return per-thread Focus directive if a focus target is set."""
+        if not self._focus_target:
+            return None
+        return (
+            "## Focus\n"
+            f"Your primary target is **{self._focus_target['name']}** "
+            f"in the thread about {self._focus_target.get('topic', 'their message')}.\n"
+            "Respond to them. One message."
         )
 
     async def on_message(self, msg: "InboundMessage", responded: bool) -> None:

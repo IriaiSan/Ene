@@ -115,7 +115,8 @@ class Thread:
     updated_at: float = field(default_factory=time.time)
 
     participants: set[str] = field(default_factory=set)  # Platform IDs
-    ene_involved: bool = False                  # Ene is a participant
+    ene_involved: bool = False                  # Ene is a participant (mentioned/replied to)
+    ene_responded: bool = False                 # Ene actually sent a reply in this thread
 
     messages: list[ThreadMessage] = field(default_factory=list)
     topic_keywords: list[str] = field(default_factory=list)
@@ -192,6 +193,7 @@ class Thread:
             "updated_at": self.updated_at,
             "participants": list(self.participants),
             "ene_involved": self.ene_involved,
+            "ene_responded": self.ene_responded,
             "messages": [m.to_dict() for m in self.messages],
             "topic_keywords": self.topic_keywords,
             "last_shown_index": self.last_shown_index,
@@ -211,6 +213,7 @@ class Thread:
             updated_at=d.get("updated_at", 0.0),
             participants=set(d.get("participants", [])),
             ene_involved=d.get("ene_involved", False),
+            ene_responded=d.get("ene_responded", False),
             messages=[ThreadMessage.from_dict(m) for m in d.get("messages", [])],
             topic_keywords=d.get("topic_keywords", []),
             last_shown_index=d.get("last_shown_index", 0),

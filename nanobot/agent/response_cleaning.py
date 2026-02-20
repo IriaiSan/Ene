@@ -4,10 +4,24 @@ Single chokepoint for all output sanitization (WHITELIST X2, X3).
 All functions are pure str → str|None with no instance state.
 """
 
+from __future__ import annotations
+
 import re
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from nanobot.ene.observatory.module_metrics import ModuleMetrics
+
+# Module-level metrics instance — set by set_metrics() during init.
+_metrics: "ModuleMetrics | None" = None
+
+
+def set_metrics(metrics: "ModuleMetrics") -> None:
+    """Attach a ModuleMetrics instance for cleaning observability."""
+    global _metrics
+    _metrics = metrics
 
 
 def condense_for_session(content: str, metadata: dict) -> str:
@@ -63,6 +77,18 @@ def clean_response(content: str, msg: Any, is_public: bool = False) -> str | Non
     if not content:
         return None
 
+    # --- Strip session markers parroted by LLM ---
+    # The LLM sees "[responded via message tool]" in session history and
+    # sometimes parrots it back as its actual response.
+    if content.strip() in (
+        "[responded via message tool]",
+        "[no response]",
+    ):
+        logger.warning("Blocked LLM parroting session marker as response")
+        return None
+
+    raw_length = len(content)
+
     # --- Strip reflection blocks ---
     content = re.sub(
         r'#{2,4}\s*(?:\*\*)?(?:[\w\s]*?)'
@@ -102,9 +128,40 @@ def clean_response(content: str, msg: Any, is_public: bool = False) -> str | Non
         content = "English only for me — I don't do other languages."
 
     # --- Strip leaked tool call XML (WHITELIST X3) ---
+    # Garbled XML from DeepSeek MUST be handled BEFORE proper XML stripping.
+    # DeepSeek outputs "<functioninvoke name=..." as raw text instead of proper
+    # function calling. Patterns vary wildly, so if the response starts with
+    # XML tool junk, extract the "content" parameter value directly.
+    _starts_with_tool_xml = re.match(
+        r'\s*<\s*(?:function|invoke)', content, re.IGNORECASE
+    )
+    if _starts_with_tool_xml:
+        _content_match = re.search(
+            r'<parameter\s+name="content"[^>]*>(.+?)(?:</parameter|parameter\b|$)',
+            content, flags=re.DOTALL
+        )
+        if _content_match:
+            content = _content_match.group(1).strip()
+        else:
+            # Can't parse — strip all XML tags and fragments
+            content = re.sub(r'<[^>]*>', '', content)
+    # Proper XML tool calls (catches well-formed leaks)
     content = re.sub(r'<function_calls>.*?</function_calls>', '', content, flags=re.DOTALL)
     content = re.sub(r'<function_calls>.*', '', content, flags=re.DOTALL)
     content = re.sub(r'</?(?:invoke|parameter|antml:invoke|antml:parameter)[^>]*>', '', content)
+    # Residual XML-ish fragments from garbled tool calls
+    content = re.sub(r'</?(?:function\w*|invoke|parameter)\b[^>]*>', '', content)
+    content = re.sub(r'#?\w*function_?\w*>', '', content)
+    content = re.sub(r'parameter\w*>', '', content)
+    # Strip <message> tags — DeepSeek wraps responses in these unprompted.
+    # Extract inner content if wrapped, otherwise just strip the tags.
+    _msg_wrap = re.match(r'^\s*<message>\s*(.*?)\s*</message>\s*$', content, re.DOTALL)
+    if _msg_wrap:
+        content = _msg_wrap.group(1)
+    else:
+        content = re.sub(r'</?message>', '', content)
+    # Leaked #msgN reply_to tags on their own line
+    content = re.sub(r'^\s*#msg\d+\s*$', '', content, flags=re.MULTILINE)
 
     # --- Strip LLM error messages that leaked through ---
     content = re.sub(r'Error calling LLM:.*', '', content, flags=re.DOTALL)
@@ -156,6 +213,16 @@ def clean_response(content: str, msg: Any, is_public: bool = False) -> str | Non
 
     content = content.strip()
     if not content:
+        if _metrics:
+            _metrics.record(
+                "cleaned",
+                raw_length=raw_length,
+                clean_length=0,
+                chars_removed=raw_length,
+                truncated=False,
+                was_blocked=True,
+                is_public=is_public,
+            )
         return None
 
     # --- Length limits ---
@@ -172,7 +239,25 @@ def clean_response(content: str, msg: Any, is_public: bool = False) -> str | Non
         logger.debug(f"Truncated public response from {len(content)} chars")
 
     # Hard Discord limit
+    truncated = False
+    truncation_point = None
     if len(content) > 1900:
+        truncation_point = 1900
         content = content[:1900] + "..."
+        truncated = True
+
+    # Record cleaning metrics
+    if _metrics:
+        clean_length = len(content)
+        _metrics.record(
+            "cleaned",
+            raw_length=raw_length,
+            clean_length=clean_length,
+            chars_removed=raw_length - clean_length,
+            truncated=truncated,
+            truncation_point=truncation_point,
+            was_blocked=False,
+            is_public=is_public,
+        )
 
     return content

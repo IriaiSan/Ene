@@ -1,5 +1,6 @@
 """Utility functions for nanobot."""
 
+import os
 from pathlib import Path
 from datetime import datetime
 
@@ -10,8 +11,34 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
+# ── Data path override (for lab/test isolation) ──────────
+
+_DATA_PATH_OVERRIDE: Path | None = None
+
+
+def set_data_path(path: Path | None) -> None:
+    """Override the default data path. Set None to reset to default.
+
+    Used by the lab harness to redirect all state (sessions, history,
+    cron) to an isolated directory. Process-global.
+    """
+    global _DATA_PATH_OVERRIDE
+    _DATA_PATH_OVERRIDE = path
+
+
 def get_data_path() -> Path:
-    """Get the nanobot data directory (~/.nanobot)."""
+    """Get the nanobot data directory.
+
+    Resolution order:
+    1. Programmatic override via set_data_path()
+    2. NANOBOT_DATA_DIR environment variable
+    3. Default: ~/.nanobot
+    """
+    if _DATA_PATH_OVERRIDE is not None:
+        return ensure_dir(_DATA_PATH_OVERRIDE)
+    env = os.environ.get("NANOBOT_DATA_DIR")
+    if env:
+        return ensure_dir(Path(env))
     return ensure_dir(Path.home() / ".nanobot")
 
 

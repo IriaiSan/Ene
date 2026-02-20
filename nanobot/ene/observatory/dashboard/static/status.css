@@ -1,0 +1,898 @@
+/* ── Ene Status Page — Bento Box Layout ───────────────────────── */
+
+.status-body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    overflow-y: auto;
+    min-height: 100vh;
+}
+
+/* ── Header (sticky) ─────────────────────────────────────────── */
+
+#status-bar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+}
+
+/* ── Zones ────────────────────────────────────────────────────── */
+
+.zone {
+    padding: 16px 24px;
+}
+
+.zone-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.zone-header h2 {
+    margin: 0;
+    font-size: 16px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-secondary);
+}
+
+.zone-divider {
+    border: none;
+    border-top: 2px solid var(--accent-dim);
+    margin: 0 24px;
+    opacity: 0.5;
+}
+
+/* ── Bento Grid ──────────────────────────────────────────────── */
+
+.bento-row {
+    margin-bottom: 12px;
+}
+
+.bento-row-2col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+.bento-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: opacity 0.3s ease;
+}
+
+.bento-card.dimmed {
+    opacity: 0.2;
+    pointer-events: none;
+}
+
+.bento-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 16px;
+    background: rgba(255, 255, 255, 0.02);
+    border-bottom: 1px solid var(--border);
+}
+
+.bento-header h3 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.bento-body {
+    padding: 12px 16px;
+}
+
+.empty-state {
+    color: var(--text-secondary);
+    font-style: italic;
+    font-size: 13px;
+    padding: 8px 0;
+}
+
+/* ── Timer Badges ────────────────────────────────────────────── */
+
+.timer {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.timer.fresh {
+    color: var(--green);
+    background: rgba(63, 185, 80, 0.1);
+}
+
+.timer.warm {
+    color: var(--yellow);
+    background: rgba(210, 153, 34, 0.1);
+}
+
+.timer.stale {
+    color: var(--text-secondary);
+}
+
+/* ── Thread Kanban ───────────────────────────────────────────── */
+
+.thread-grid {
+    display: flex;
+    gap: 12px;
+    overflow-x: auto;
+    padding-bottom: 8px;
+    align-items: flex-start;
+}
+
+/* Each thread is a kanban column */
+.kanban-column {
+    min-width: 320px;
+    max-width: 400px;
+    flex-shrink: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    border-top: 3px solid var(--green);
+    display: flex;
+    flex-direction: column;
+}
+
+.kanban-column.state-stale { border-top-color: var(--yellow); }
+.kanban-column.state-dead,
+.kanban-column.state-resolved { border-top-color: var(--red); opacity: 0.6; }
+
+.kanban-header {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+}
+
+.kanban-header-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+}
+
+.kanban-msg-count {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.thread-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.thread-state .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.thread-state .dot.active { background: var(--green); }
+.thread-state .dot.stale { background: var(--yellow); }
+.thread-state .dot.dead, .thread-state .dot.resolved { background: var(--red); }
+
+.kanban-participants {
+    color: var(--text);
+    font-size: 12px;
+    margin-bottom: 2px;
+}
+
+.kanban-times {
+    display: flex;
+    gap: 12px;
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+
+/* Message list inside the column */
+.kanban-messages {
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+.kanban-empty {
+    color: var(--text-secondary);
+    font-style: italic;
+    font-size: 12px;
+    padding: 8px;
+}
+
+/* Individual message bubble */
+.kanban-msg {
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: var(--bg);
+    font-size: 12px;
+    border-left: 2px solid transparent;
+}
+
+.kanban-msg.kanban-msg-ene {
+    background: rgba(88, 166, 255, 0.06);
+    border-left-color: var(--accent);
+}
+
+.kanban-msg.kanban-msg-respond {
+    border-left-color: var(--green);
+}
+
+.kanban-msg-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2px;
+}
+
+.kanban-msg-author {
+    font-weight: 600;
+    font-size: 11px;
+    color: var(--text);
+}
+
+.kanban-msg-author.ene-author {
+    color: var(--accent);
+}
+
+.kanban-msg-time {
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+
+.kanban-msg-text {
+    color: var(--text);
+    line-height: 1.4;
+    word-break: break-word;
+}
+
+/* ── Pending Messages ────────────────────────────────────────── */
+
+.pending-section {
+    margin-top: 12px;
+}
+
+.pending-section.hidden {
+    display: none;
+}
+
+.pending-label {
+    margin: 0 0 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.pending-grid {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.pending-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    max-width: 250px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pending-card .sender {
+    color: var(--text);
+    font-weight: 500;
+}
+
+/* ── Pipeline Overlay ────────────────────────────────────────── */
+
+.pipeline-overlay {
+    display: none;
+    text-align: center;
+    padding: 32px 20px;
+    color: var(--text-secondary);
+    font-size: 15px;
+}
+
+.pipeline-overlay.visible {
+    display: block;
+}
+
+#pipeline-overlay-icon {
+    font-size: 28px;
+    display: block;
+    margin-bottom: 8px;
+}
+
+/* ── Intake Section ──────────────────────────────────────────── */
+
+.intake-msg {
+    margin-bottom: 8px;
+}
+
+.intake-sender {
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.intake-content {
+    color: var(--text);
+    margin-top: 4px;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.intake-meta {
+    display: flex;
+    gap: 12px;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.intake-badge {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.intake-buffer {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: var(--bg);
+    border-radius: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.intake-notice {
+    margin-top: 6px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.intake-notice.rate-limited {
+    background: rgba(248, 81, 73, 0.1);
+    color: var(--red);
+}
+
+.intake-notice.muted {
+    background: rgba(210, 153, 34, 0.1);
+    color: var(--yellow);
+}
+
+/* ── Daemon Analysis Section ─────────────────────────────────── */
+
+.daemon-classification {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.cls-badge {
+    font-size: 13px;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.cls-respond { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+.cls-context { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+.cls-drop { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+
+.confidence-bar {
+    flex: 1;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.confidence-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s;
+}
+
+.confidence-fill.high { background: var(--green); }
+.confidence-fill.mid { background: var(--yellow); }
+.confidence-fill.low { background: var(--red); }
+
+.confidence-pct {
+    font-size: 13px;
+    font-weight: 600;
+    min-width: 40px;
+    text-align: right;
+}
+
+.daemon-details {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 12px;
+    font-size: 13px;
+}
+
+.daemon-label {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.daemon-value {
+    color: var(--text);
+}
+
+.daemon-security {
+    margin-top: 8px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    background: rgba(248, 81, 73, 0.1);
+    color: var(--red);
+    font-size: 12px;
+}
+
+.daemon-fallback {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--yellow);
+}
+
+/* ── Classification Table ────────────────────────────────────── */
+
+.classify-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin-bottom: 10px;
+}
+
+.classify-table th {
+    text-align: left;
+    font-weight: 500;
+    color: var(--text-secondary);
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.classify-table td {
+    padding: 4px 8px;
+    border-bottom: 1px solid rgba(48, 54, 61, 0.3);
+}
+
+.cls-mini {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+
+.classify-merge {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: var(--bg);
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.classify-decision {
+    margin-top: 10px;
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.classify-decision.yes {
+    background: rgba(63, 185, 80, 0.1);
+    color: var(--green);
+}
+
+.classify-decision.no {
+    background: rgba(248, 81, 73, 0.1);
+    color: var(--red);
+}
+
+/* ── Person Card ─────────────────────────────────────────────── */
+
+.person-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.person-name {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.tier-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.tier-stranger { background: rgba(139, 148, 158, 0.2); color: var(--text-secondary); }
+.tier-acquaintance { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+.tier-familiar { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+.tier-trusted { background: rgba(188, 140, 255, 0.15); color: var(--purple); }
+.tier-inner_circle { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+
+.trust-bar-container {
+    margin: 8px 0;
+}
+
+.trust-bar {
+    height: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.trust-fill {
+    height: 100%;
+    border-radius: 4px;
+    background: var(--accent);
+    transition: width 0.3s;
+}
+
+.trust-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+.person-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 12px;
+    font-size: 12px;
+    margin: 8px 0;
+}
+
+.person-stats .stat-label {
+    color: var(--text-secondary);
+}
+
+.person-stats .stat-value {
+    color: var(--text);
+    font-weight: 500;
+}
+
+.person-summary {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-style: italic;
+}
+
+.person-notes {
+    margin-top: 8px;
+}
+
+.person-note {
+    font-size: 12px;
+    color: var(--text-secondary);
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(48, 54, 61, 0.3);
+}
+
+/* ── Memory & Diary ──────────────────────────────────────────── */
+
+.memory-budget-total {
+    margin-bottom: 10px;
+    padding: 8px 12px;
+    background: var(--bg);
+    border-radius: 6px;
+}
+
+.budget-bar {
+    height: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 4px;
+}
+
+.budget-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--accent);
+    transition: width 0.3s;
+}
+
+.budget-fill.warning { background: var(--yellow); }
+.budget-fill.critical { background: var(--red); }
+
+.budget-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.memory-sections {
+    margin-bottom: 10px;
+}
+
+.memory-section-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: 12px;
+}
+
+.memory-section-name {
+    min-width: 80px;
+    color: var(--text-secondary);
+}
+
+.memory-section-bar {
+    flex: 1;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.memory-section-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--accent);
+}
+
+.memory-section-count {
+    font-size: 11px;
+    color: var(--text-secondary);
+    min-width: 70px;
+    text-align: right;
+}
+
+.diary-section {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+}
+
+.diary-section h4 {
+    margin: 0 0 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.diary-entry {
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.5;
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(48, 54, 61, 0.3);
+}
+
+/* ── Context (Split: styled system + raw history) ────────────── */
+
+.context-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.context-section-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-secondary);
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 6px;
+}
+
+.context-system-block {
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+
+.context-system-content {
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+.context-history-block {
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+
+.context-history-raw {
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+    margin: 0;
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+.history-role {
+    font-weight: 700;
+    color: var(--accent);
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+}
+
+/* ── LLM Processing ──────────────────────────────────────────── */
+
+.llm-header-info {
+    display: flex;
+    gap: 16px;
+    font-size: 13px;
+    margin-bottom: 10px;
+    color: var(--text-secondary);
+}
+
+.llm-header-info strong {
+    color: var(--text);
+}
+
+.llm-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.tool-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    border-left: 3px solid var(--purple);
+}
+
+.tool-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+}
+
+.tool-name {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--purple);
+}
+
+.tool-latency {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.tool-args, .tool-result {
+    font-family: 'SF Mono', 'Cascadia Code', monospace;
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    word-break: break-all;
+}
+
+.tool-args-label, .tool-result-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+    opacity: 0.7;
+}
+
+.llm-summary {
+    padding: 8px 12px;
+    background: var(--bg);
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+/* ── Ene's Response ──────────────────────────────────────────── */
+
+.response-text {
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text);
+    padding: 12px 0;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    margin: 8px 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.response-stats {
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.response-stat-warn {
+    color: var(--yellow);
+}
+
+.response-stat-error {
+    color: var(--red);
+}
+
+/* ── Responsive ──────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+    .bento-row-2col {
+        grid-template-columns: 1fr;
+    }
+
+    .thread-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .zone {
+        padding: 12px 16px;
+    }
+
+    .zone-divider {
+        margin: 0 16px;
+    }
+}

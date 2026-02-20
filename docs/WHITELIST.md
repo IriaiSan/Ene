@@ -28,6 +28,11 @@
 | S5 | All Ene-specific code lives under `nanobot/ene/` or `nanobot/agent/` | Clear separation from upstream nanobot; easier merge conflicts | 2026-02-18 |
 | S6 | Constants in dedicated module (`security.py` for security constants, etc.) | No magic numbers scattered across files | 2026-02-18 |
 | S7 | Type hints on all function signatures | Self-documenting; catches bugs early; helps Claude understand code | 2026-02-18 |
+| S8 | Import order: `__future__` → stdlib → typing/TYPE_CHECKING → loguru → project → `if TYPE_CHECKING:` block | Consistent across all files; prevents circular imports; one pattern to follow | 2026-02-19 |
+| S9 | Tools return error strings from `execute()`, never raise exceptions | LLM reads return value — needs human-readable feedback, not stack traces | 2026-02-19 |
+| S10 | Module heavy imports inside `initialize()`, not top-level | Prevents circular imports at startup; heavy deps loaded only when needed | 2026-02-19 |
+| S11 | File encoding: always `encoding="utf-8"` on `open()` calls | Windows crashes on non-ASCII without explicit encoding | 2026-02-19 |
+| S12 | No silent exception swallowing — minimum: `except Exception: logger.warning(...)` | Silent failures are invisible bugs; always log something | 2026-02-19 |
 
 ---
 
@@ -42,6 +47,14 @@
 | A5 | Conversation tracker owns message content; session stores lightweight markers only | Prevents dual-source duplication (the bug we just fixed) | 2026-02-18 |
 | A6 | All module state persists to disk (JSON/SQLite) — no in-memory-only state | Bot restarts shouldn't lose data; debuggable via file inspection | 2026-02-18 |
 | A7 | Module hot-swap: non-core modules can be enabled/disabled at runtime via config | Dad can flip switches without restarting; Ene can disable her own non-core modules | 2026-02-18 |
+| A8 | Lab isolation via path overrides, not code forks — single codebase, zero drift | One codebase to maintain; lab and live always in sync | 2026-02-19 |
+| A9 | MockChannel in `nanobot/channels/` follows BaseChannel pattern | Same `_handle_message()` path as real channels | 2026-02-19 |
+| A10 | RecordReplayProvider in `nanobot/providers/` follows LLMProvider ABC | Wraps real provider; transparent to agent loop | 2026-02-19 |
+| A11 | Lab infrastructure in `nanobot/lab/` — separate from core, does not modify locked code | Lab can evolve independently without touching production paths | 2026-02-19 |
+| A12 | Module-level observability via `module_events` SQLite table + `ModuleMetrics` class | Per-module structured events enable debugging WHY decisions were made (vs operational metrics that only show WHAT happened) | 2026-02-19 |
+| A13 | Trace ID generated per batch in `_process_batch()`, propagated to all `ModuleMetrics` instances | Links all module events across the full pipeline for one message batch — enables cross-module tracing | 2026-02-19 |
+| A14 | Prompts extracted from source to `.txt` files in `nanobot/agent/prompts/` with `PromptLoader` | Version-tracked, file-based prompts enable A/B testing and behavioral correlation via manifest.json version tag | 2026-02-19 |
+| A15 | Module instrumentation uses module-level `_metrics` + `set_metrics()` pattern (not instance attributes) | Avoids modifying class __init__ signatures; metrics wiring happens in loop.py during module initialization | 2026-02-19 |
 
 ---
 
@@ -69,6 +82,13 @@
 | C4 | Observatory tracks every LLM call — model, tokens, cost, latency | Can't optimize what you can't measure | 2026-02-18 |
 | C5 | Message tool stops the agent loop — max 1 response per batch | Prevents token waste from multi-message loops | 2026-02-18 |
 | C6 | Public channel responses capped at 500 chars | Ene shouldn't write essays in group chat | 2026-02-18 |
+| C7 | Main LLM has fallback model rotation (DeepSeek → Qwen 3 → Gemini Flash) | Prevents indefinite blocking when primary model is down | 2026-02-19 |
+| C8 | 45s timeout per LLM call, retry once with next model | Balance between patience and not hanging forever | 2026-02-19 |
+| C9 | Queue merge: backlogged batches collapse into one mega-batch | Ene catches up by reading everything at once, not replying to stale batches one by one | 2026-02-19 |
+| C10 | Debounce window 3.5s, batch limit 15, buffer cap 40 | Longer window = fewer small batches; queue merge handles overflow | 2026-02-19 |
+| C11 | Model recovery: after 5 min cooldown, probe primary on next chat(); snap back on success | Prevents permanent degradation to fallback after transient outages | 2026-02-19 |
+| C12 | Diary consolidation uses Gemini 3 Flash (separate from main model) | Different model breaks pattern-lock; terse factual prompt prevents flowery prose | 2026-02-19 |
+| C13 | DEFAULT_FALLBACK_MODELS[0] must match config.json model | Prevents silent model switch on deployment; config is source of truth for primary model | 2026-02-19 |
 
 ---
 
@@ -81,6 +101,11 @@
 | T3 | `pytest` only — no unittest, no nose | Consistency; pytest fixtures are powerful | 2026-02-18 |
 | T4 | Mock external APIs (OpenRouter, Discord, Telegram) in tests | Tests must work offline | 2026-02-18 |
 | T5 | All tests must pass before commit (`python -m pytest tests/ -x -q`) | No broken builds | 2026-02-18 |
+| T6 | Lab runs same AgentLoop code as production — only paths, provider, channel seams change | Eval must match prod (Anthropic eval guide) | 2026-02-19 |
+| T7 | Lab state isolated per instance via `set_data_path()` + `sessions_dir` parameter | Prevents contamination, enables parallel runs | 2026-02-19 |
+| T8 | RecordReplayProvider caches by hash of (model + messages + tool names), excludes temperature | Same prompt = same cache hit regardless of behavioral params | 2026-02-19 |
+| T9 | Named immutable snapshots for reproducible test starting conditions | Each trial from same snapshot = identical starting state (tau-bench) | 2026-02-19 |
+| T10 | State verification (tau-bench pattern) over text matching in lab tests | Text-matching evals miss 30-40% of actual failures | 2026-02-19 |
 
 ---
 
@@ -92,6 +117,8 @@
 | D2 | `docs/architecture.html` updated when features/modules change | Visual map stays accurate | 2026-02-18 |
 | D3 | `docs/WHITELIST.md` (this file) checked before every technical decision | Consistency enforcement | 2026-02-18 |
 | D4 | Code comments explain WHY, not WHAT | The code shows what; comments explain the reasoning | 2026-02-18 |
+| D5 | `docs/OBSERVABILITY.md` documents module events, trace_id, view_module tool, and prompt versioning | Module-level observability needs its own reference since it spans 5 modules + dashboard + tools | 2026-02-19 |
+| D6 | `docs/CODING_PATTERNS.md` is the pattern reference for all Claude Code sessions — read before writing code | Prevents coding style drift across sessions; copy-paste templates enforce consistency | 2026-02-19 |
 
 ---
 

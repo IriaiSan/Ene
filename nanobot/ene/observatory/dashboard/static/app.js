@@ -310,3 +310,26 @@ async function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// ── Brain Indicator ──────────────────────────────────
+
+async function pollBrainStatus() {
+    const brainEl = document.getElementById('brain-indicator');
+    if (!brainEl) return;
+    try {
+        const res = await fetch(API + '/api/brain');
+        if (res.ok) {
+            const data = await res.json();
+            if (data.enabled) {
+                brainEl.textContent = '🧠 ON';
+                brainEl.className = 'badge healthy';
+            } else {
+                brainEl.textContent = '🧠 OFF';
+                brainEl.className = 'badge critical';
+            }
+        }
+    } catch (e) { /* silent */ }
+}
+
+pollBrainStatus();
+setInterval(pollBrainStatus, 5000);

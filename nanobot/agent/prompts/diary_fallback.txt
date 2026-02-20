@@ -1,0 +1,6 @@
+Write a brief 3rd-person diary entry (2-4 sentences).
+
+## Conversation
+{conversation}
+
+Diary entry:

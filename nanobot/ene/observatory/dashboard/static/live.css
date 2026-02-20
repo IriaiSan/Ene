@@ -234,6 +234,23 @@
 .evt-system     { border-left-color: var(--text-secondary); }
 .evt-system .evt-badge { background: var(--bg); color: var(--text-secondary); }
 
+.evt-module     { border-left-color: #a78bfa; }
+.evt-module .evt-badge { background: #1a0d2e; color: #a78bfa; }
+
+/* Module Health panel */
+.module-health { font-size: 12px; line-height: 1.6; }
+.mh-row { padding: 2px 0; border-bottom: 1px solid var(--border); }
+.mh-row:last-child { border-bottom: none; }
+.mh-label {
+    display: inline-block;
+    width: 60px;
+    font-weight: 600;
+    color: #a78bfa;
+    font-size: 11px;
+}
+
+.dot-module { background: #a78bfa; }
+
 /* Connection badge states */
 .badge.connecting { background: #2d1b00; color: var(--yellow); }
 .badge.connected  { background: #0d2818; color: var(--green); }

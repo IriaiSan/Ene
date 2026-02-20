@@ -53,23 +53,46 @@ def _format_thread_message(
     tm: ThreadMessage,
     msg_counter: int,
     msg_id_map: dict[str, str],
+    *,
+    with_tag: bool = False,
 ) -> tuple[str, int]:
-    """Format a single thread message with #msgN tag.
+    """Format a single thread message.
+
+    Only includes a #msgN reply tag when with_tag=True. Tags are reserved
+    for the latest non-Ene messages that Ene should reply to — most messages
+    in threads are plain dialogue (no tags, no noise).
 
     Returns (formatted_line, next_counter).
     """
-    tag = f"#msg{msg_counter}"
-    if tm.discord_msg_id:
-        msg_id_map[tag] = tm.discord_msg_id
+    if with_tag:
+        tag = f"#msg{msg_counter}"
+        if tm.discord_msg_id:
+            msg_id_map[tag] = tm.discord_msg_id
+        prefix = f"{tag} "
+        next_counter = msg_counter + 1
+    else:
+        prefix = ""
+        next_counter = msg_counter
 
     if tm.is_ene:
-        line = f"{tag} Ene: {tm.content}"
+        line = f"{prefix}Ene: {tm.content}"
     elif tm.author_username and tm.author_username != tm.author_name:
-        line = f"{tag} {tm.author_name} (@{tm.author_username}): {tm.content}"
+        line = f"{prefix}{tm.author_name} (@{tm.author_username}): {tm.content}"
     else:
-        line = f"{tag} {tm.author_name}: {tm.content}"
+        line = f"{prefix}{tm.author_name}: {tm.content}"
 
-    return line, msg_counter + 1
+    return line, next_counter
+
+
+def _last_non_ene_index(messages: list[ThreadMessage]) -> int:
+    """Find the index of the last non-Ene message in a list.
+
+    Returns -1 if no non-Ene messages exist.
+    """
+    for i in range(len(messages) - 1, -1, -1):
+        if not messages[i].is_ene:
+            return i
+    return -1
 
 
 def _format_ene_thread(
@@ -107,7 +130,14 @@ def _format_ene_thread(
     new_msgs = thread.messages[thread.last_shown_index:]
     if thread.last_shown_index > 0:
         if not new_msgs:
-            # Thread already fully shown, no new messages — skip entirely
+            # Thread has no new messages but is still active — show a brief
+            # reminder so the LLM knows this conversation exists. Skipping it
+            # entirely caused threads to vanish from the prompt.
+            last_activity = _format_age(thread.updated_at, now)
+            lines.append(
+                f"--- Thread (no new messages, last activity {last_activity}) ---"
+            )
+            lines.append(f"Participants: {', '.join(participant_names)}")
             return lines, msg_counter
         already = thread.last_shown_index
         lines.append(
@@ -115,8 +145,13 @@ def _format_ene_thread(
             f"{already} earlier messages already in your history ---"
         )
         lines.append(f"Participants: {', '.join(participant_names)}")
-        for tm in new_msgs:
-            line, msg_counter = _format_thread_message(tm, msg_counter, msg_id_map)
+        # Only the last non-Ene message gets a reply tag
+        last_non_ene_idx = _last_non_ene_index(new_msgs)
+        for i, tm in enumerate(new_msgs):
+            line, msg_counter = _format_thread_message(
+                tm, msg_counter, msg_id_map,
+                with_tag=(i == last_non_ene_idx),
+            )
             lines.append(line)
         return lines, msg_counter
 
@@ -125,12 +160,16 @@ def _format_ene_thread(
     lines.append(f"Participants: {', '.join(participant_names)}")
 
     if count <= ENE_THREAD_SHORT_THRESHOLD:
-        # Short thread — show all messages
-        for tm in thread.messages:
-            line, msg_counter = _format_thread_message(tm, msg_counter, msg_id_map)
+        # Short thread — show all messages, tag only last non-Ene
+        last_non_ene_idx = _last_non_ene_index(thread.messages)
+        for i, tm in enumerate(thread.messages):
+            line, msg_counter = _format_thread_message(
+                tm, msg_counter, msg_id_map,
+                with_tag=(i == last_non_ene_idx),
+            )
             lines.append(line)
     else:
-        # Long thread — first N + gap + last N
+        # Long thread — first N + gap + last N, tag only last non-Ene in last N
         first_msgs = thread.messages[:ENE_THREAD_FIRST_N]
         last_msgs = thread.messages[-ENE_THREAD_LAST_N:]
         omitted = count - ENE_THREAD_FIRST_N - ENE_THREAD_LAST_N
@@ -141,8 +180,12 @@ def _format_ene_thread(
 
         lines.append(f"[... {omitted} earlier messages omitted ...]")
 
-        for tm in last_msgs:
-            line, msg_counter = _format_thread_message(tm, msg_counter, msg_id_map)
+        last_non_ene_idx = _last_non_ene_index(last_msgs)
+        for i, tm in enumerate(last_msgs):
+            line, msg_counter = _format_thread_message(
+                tm, msg_counter, msg_id_map,
+                with_tag=(i == last_non_ene_idx),
+            )
             lines.append(line)
 
     return lines, msg_counter
@@ -294,9 +337,12 @@ def build_threaded_context(
     # ── Unthreaded messages ──────────────────────────────────────
     if unthreaded:
         parts.append("[unthreaded]\n")
-        for pm in unthreaded[-5:]:  # Last 5 unthreaded
+        last_idx = len(unthreaded[-5:]) - 1
+        for i, pm in enumerate(unthreaded[-5:]):  # Last 5 unthreaded
+            # Tag the last unthreaded message — Ene might reply to it
             line, msg_counter = _format_thread_message(
-                pm.message, msg_counter, msg_id_map
+                pm.message, msg_counter, msg_id_map,
+                with_tag=(i == last_idx),
             )
             parts.append(line)
         parts.append("")
@@ -305,31 +351,34 @@ def build_threaded_context(
     # This can happen if messages were just ingested and all went to pending,
     # or if the tracker state is empty. Fall through with raw messages.
     if not parts:
-        # Build a minimal trace from the current batch
+        # Build a minimal trace from the current batch.
+        # Only tag the last respond message — that's what Ene should reply to.
         parts.append("[conversation trace]\n")
-        for m in respond_msgs:
+        last_respond_idx = len(respond_msgs) - 1
+        for i, m in enumerate(respond_msgs):
             author = m.metadata.get("author_name", m.sender_id)
             username = m.metadata.get("username", "")
-            tag = f"#msg{msg_counter}"
-            real_id = m.metadata.get("message_id", "")
-            if real_id:
-                msg_id_map[tag] = real_id
-            if username and username != author:
-                parts.append(f"{tag} {author} (@{username}): {m.content}")
-            else:
-                parts.append(f"{tag} {author}: {m.content}")
-            msg_counter += 1
-
-        if context_msgs:
-            parts.append("\n[background — not directed at you]\n")
-            for m in context_msgs[-5:]:
-                author = m.metadata.get("author_name", m.sender_id)
+            use_tag = (i == last_respond_idx)
+            if use_tag:
                 tag = f"#msg{msg_counter}"
                 real_id = m.metadata.get("message_id", "")
                 if real_id:
                     msg_id_map[tag] = real_id
-                parts.append(f"{tag} {author}: {m.content}")
+                prefix = f"{tag} "
                 msg_counter += 1
+            else:
+                prefix = ""
+            if username and username != author:
+                parts.append(f"{prefix}{author} (@{username}): {m.content}")
+            else:
+                parts.append(f"{prefix}{author}: {m.content}")
+
+        if context_msgs:
+            # Background messages — no tags (not directed at Ene)
+            parts.append("\n[background — not directed at you]\n")
+            for m in context_msgs[-5:]:
+                author = m.metadata.get("author_name", m.sender_id)
+                parts.append(f"{author}: {m.content}")
 
     merged_content = "\n".join(parts).strip()
 
@@ -368,3 +417,103 @@ def build_threaded_context(
             "bg_thread_count": len(bg_threads),
         },
     )
+
+
+def build_single_thread_context(
+    focus_thread: Thread,
+    all_threads: dict[str, Thread],
+    pending: list[PendingMessage],
+    channel_key: str,
+) -> tuple[str, dict[str, str], str | None]:
+    """Build focused context for a single thread's LLM call.
+
+    Shows the focus thread as the primary conversation and all other
+    threads as background context. Does NOT mutate last_shown_index —
+    the caller (per-thread loop) handles that after response.
+
+    Returns:
+        (content, msg_id_map, primary_author_name)
+    """
+    now = time.time()
+    msg_id_map: dict[str, str] = {}
+    msg_counter = 1
+    parts: list[str] = []
+
+    # ── Focus thread (primary) ────────────────────────────────────
+    # Show only new messages since last shown
+    new_msgs = focus_thread.messages[focus_thread.last_shown_index:]
+    if not new_msgs:
+        new_msgs = focus_thread.messages[-4:]  # Fallback: show last 4
+
+    parts.append("[your conversation — respond to this thread]\n")
+
+    if focus_thread.last_shown_index > 0:
+        already = focus_thread.last_shown_index
+        parts.append(
+            f"--- Thread (continued, {len(new_msgs)} new): "
+            f"{already} earlier messages already in your history ---"
+        )
+    else:
+        age = _format_age(focus_thread.created_at, now)
+        parts.append(
+            f"--- Thread: started {age}, {focus_thread.message_count} messages "
+            f"({focus_thread.state}) ---"
+        )
+
+    # Participant names
+    participant_names = []
+    seen = set()
+    for msg in focus_thread.messages:
+        name = "Ene" if msg.is_ene else msg.author_name
+        if name not in seen:
+            participant_names.append(name)
+            seen.add(name)
+    parts.append(f"Participants: {', '.join(participant_names)}")
+
+    # Only tag the last non-Ene message — that's what Ene should reply to
+    last_non_ene_idx = _last_non_ene_index(new_msgs)
+    for i, tm in enumerate(new_msgs):
+        line, msg_counter = _format_thread_message(
+            tm, msg_counter, msg_id_map,
+            with_tag=(i == last_non_ene_idx),
+        )
+        parts.append(line)
+    parts.append("")
+
+    # Determine primary author (non-Ene sender who spoke most recently)
+    primary_author_name = None
+    for tm in reversed(new_msgs):
+        if not tm.is_ene:
+            primary_author_name = tm.author_name
+            break
+
+    # ── Other threads as background ───────────────────────────────
+    channel_threads = [
+        t for t in all_threads.values()
+        if t.channel_key == channel_key
+        and t.state != DEAD
+        and t.thread_id != focus_thread.thread_id
+    ]
+
+    other_ene = [t for t in channel_threads if t.ene_involved]
+    bg = [t for t in channel_threads if not t.ene_involved]
+
+    if other_ene or bg:
+        parts.append("[background — other conversations happening around you]\n")
+        for t in sorted(other_ene + bg, key=lambda t: t.updated_at, reverse=True)[:3]:
+            lines, msg_counter = _format_bg_thread(t, msg_counter, msg_id_map, now)
+            parts.extend(lines)
+            parts.append("")
+
+    # ── Unthreaded pending ────────────────────────────────────────
+    channel_pending = [pm for pm in pending if pm.channel_key == channel_key]
+    if channel_pending:
+        parts.append("[unthreaded]\n")
+        for pm in channel_pending[-3:]:
+            line, msg_counter = _format_thread_message(
+                pm.message, msg_counter, msg_id_map
+            )
+            parts.append(line)
+
+    content = "\n".join(parts).strip()
+    return content, msg_id_map, primary_author_name

@@ -22,7 +22,17 @@ from loguru import logger
 if TYPE_CHECKING:
     from nanobot.ene.memory.system import MemorySystem
     from nanobot.ene.observatory.collector import MetricsCollector
+    from nanobot.ene.observatory.module_metrics import ModuleMetrics
     from nanobot.providers.base import LLMProvider
+
+# Module-level metrics instance — set by set_metrics() during init.
+_metrics: "ModuleMetrics | None" = None
+
+
+def set_metrics(metrics: "ModuleMetrics") -> None:
+    """Attach a ModuleMetrics instance for memory observability."""
+    global _metrics
+    _metrics = metrics
 
 
 # ── Prompts ────────────────────────────────────────────────
@@ -192,6 +202,18 @@ class SleepTimeAgent:
         if not facts_data:
             return stats
 
+        # Record extraction metrics
+        _facts_list = facts_data.get("facts", [])
+        _ent_list = facts_data.get("entities", [])
+        if _metrics and (_facts_list or _ent_list):
+            _metrics.record(
+                "facts_extracted",
+                count=len(_facts_list),
+                entity_count=len(_ent_list),
+                entities=[e.get("name", "") for e in _ent_list[:10]],
+                importance_scores=[f.get("importance", 5) for f in _facts_list],
+            )
+
         # Step 2-3: Process facts (with contradiction checking)
         facts = facts_data.get("facts", [])
         for fact in facts:
@@ -237,6 +259,15 @@ class SleepTimeAgent:
         if stats["facts_added"] > 0:
             diary_content = self._build_diary_entry(facts, entities)
             self._system.write_diary_entry(diary_content)
+            if _metrics:
+                _metrics.record(
+                    "diary_written",
+                    entry_length=len(diary_content),
+                    facts_count=len(facts),
+                    entity_count=len(entities),
+                    model_used=self._model or "unknown",
+                    path="idle",
+                )
 
         logger.info(
             f"Idle processing complete: "
@@ -291,7 +322,16 @@ class SleepTimeAgent:
             data = self._parse_json(response)
 
             if data and data.get("contradicts"):
-                if data.get("keep") == "new":
+                resolution = data.get("keep", "existing")
+                if _metrics:
+                    _metrics.record(
+                        "contradiction_found",
+                        existing_memory=top.content[:100],
+                        new_fact=new_fact[:100],
+                        resolution=resolution,
+                        reason=data.get("reason", ""),
+                    )
+                if resolution == "new":
                     # Supersede the old memory
                     self._system.vector.mark_superseded(top.id, "new_fact")
                     logger.info(
@@ -421,6 +461,13 @@ class SleepTimeAgent:
                     topic=ref.get("topic", ""),
                 )
                 count += 1
+                if _metrics:
+                    _metrics.record(
+                        "reflection_generated",
+                        topic=ref.get("topic", ""),
+                        insight_length=len(content),
+                        importance=ref.get("importance", 5),
+                    )
 
             return count
         except Exception as e:
@@ -460,6 +507,7 @@ class SleepTimeAgent:
                 return 0
 
             pruned = 0
+            kept = 0
             for decision in data["decisions"]:
                 if decision.get("action") == "prune":
                     mid = decision.get("id", "")
@@ -468,6 +516,16 @@ class SleepTimeAgent:
                         logger.debug(
                             f"Pruned memory [{mid}]: {decision.get('reason', '')}"
                         )
+                else:
+                    kept += 1
+
+            if _metrics:
+                _metrics.record(
+                    "pruning_decision",
+                    candidates_reviewed=len(candidates),
+                    items_pruned=pruned,
+                    items_kept=kept,
+                )
 
             return pruned
         except Exception as e:
@@ -477,10 +535,23 @@ class SleepTimeAgent:
     async def _review_core_budget(self) -> int:
         """Review core memory and archive if over budget."""
         core = self._system.core
+        current_tokens = core.get_total_tokens()
+        max_tokens = core.token_budget
+
+        # Always record budget check
+        if _metrics:
+            _metrics.record(
+                "budget_check",
+                current_tokens=current_tokens,
+                max_tokens=max_tokens,
+                utilization_pct=round(current_tokens / max_tokens * 100, 1) if max_tokens else 0,
+                over_budget=core.is_over_budget,
+            )
+
         if not core.is_over_budget:
             return 0
 
-        over_by = core.get_total_tokens() - core.token_budget
+        over_by = current_tokens - max_tokens
         entries = core.get_all_entries()
 
         entries_text = "\n".join(

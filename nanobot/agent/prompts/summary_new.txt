@@ -1,0 +1,9 @@
+Summarize this conversation concisely (3-6 sentences).
+Write in 3rd person about Ene ("Ene", "she").
+Name who said or did each thing — check the [brackets] for speaker identity.
+Only say "Dad" did something if you see [Dad ...] or [Iitai @iitai.uwu] speaking.
+
+CONVERSATION:
+{older_text}
+
+Write the summary:

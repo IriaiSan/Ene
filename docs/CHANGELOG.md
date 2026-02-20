@@ -4,6 +4,252 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-20c] — Session Marker + Message Tag Leak Fix
+
+### Fixed
+- **Session parroting bug** (`loop.py`): Session history stored `[responded via message tool]` as assistant content when the message tool was used. After dozens of turns, the LLM pattern-locked onto this marker and literally output it as its Discord response. Root cause: the opaque marker was the only content stored for assistant turns when `final_content` was None (message tool path). Fix: Added `_last_message_content` instance variable that captures the actual cleaned message text from the message tool callback. Session now stores the real response content.
+- **`<message>` tag stripping** (`response_cleaning.py`): DeepSeek v3.2 spontaneously wraps responses in `<message>...</message>` XML tags. These leaked directly into Discord messages. Added extraction/stripping in `clean_response()` — if the entire response is wrapped, extracts inner content; otherwise strips tags individually.
+- **Session marker safety net** (`response_cleaning.py`): `clean_response()` now explicitly blocks `[responded via message tool]` and `[no response]` as final output. If the LLM ever parrots these session markers, they get killed before reaching Discord.
+- **Session + thread state cleanup**: Cleared poisoned session (99 entries, every assistant line was the opaque marker) and thread state. Ene starts fresh with clean history.
+
+---
+
+## [2026-02-20b] — Discord Resilience + Garbled XML Defense
+
+### Fixed
+- **Garbled XML suppression broadened** (`loop.py`): Agent loop now catches all garbled XML patterns (`<functioninvoke`, `<invoke`, `<parameter`) not just `<function_calls>`. DeepSeek v3.2 outputs many garbled variants — the old check missed most of them. Garbled responses are now suppressed before they reach Discord or get stored.
+- **`add_ene_response()` XML guard** (`tracker.py`): New guard rejects any content containing XML tool call patterns before storing it as an Ene response in threads. Prevents garbled XML from polluting thread context even if `clean_response()` doesn't fully strip it.
+- **Session cleanup**: Removed 13 garbled XML entries from session history that were confusing the LLM.
+
+### Added
+- **Discord RESUME support** (`discord.py`): On reconnect, bot now attempts RESUME (op 6) instead of fresh IDENTIFY (op 2). Captures `session_id` and `resume_gateway_url` from READY event. Falls back to IDENTIFY only if session is invalid (op 9, d=false). Reduces IDENTIFY usage and replays missed events on reconnect.
+- **Exponential backoff** (`discord.py`): Reconnect delay now escalates: 5s → 10s → 20s → 40s → 60s (cap). Resets on successful connection. Prevents burning through Discord's 1000/day IDENTIFY limit during extended outages.
+
+---
+
+## [2026-02-20a] — Thread Context Overhaul + Ene Response Injection
+
+### Added
+- **Ene responses in threads** (`tracker.py`): New `add_ene_response()` method injects Ene's cleaned response text into threads after every response. Threads now contain full dialogue (user → Ene → user → Ene) instead of just user messages. Called from both direct return and message tool paths in `loop.py`.
+- **`_last_non_ene_index()` helper** (`formatter.py`): Finds the last non-Ene message in a thread for targeted tagging.
+
+### Changed
+- **#msgN tag reduction** (`formatter.py`): Tags now only appear on the last non-Ene message per thread (the one Ene should reply to). Background threads get no tags. Unthreaded section tags only the last message. Fallback trace tags only the last respond message. Reduces noise and prevents DeepSeek from pattern-locking on tag syntax.
+- **Session storage cleaned up** (`loop.py`): All three session write paths (respond, message-tool, lurk) now use `condense_for_session()` instead of opaque `[Name and others — N messages, N threads]` markers.
+- **Thread no-new-messages handling** (`formatter.py`): Threads with no new messages now show a brief reminder instead of being silently skipped from the prompt.
+
+### Fixed
+- **Garbled XML cleaning hardened** (`response_cleaning.py`): Reordered to check garbled XML before proper XML strip. Extracts content parameter from garbled `<functioninvoke>` tool calls. Strips residual XML fragments and leaked `#msgN` tags.
+- **Status dashboard pending cards** (`status.js`): Fixed `renderPendingCard()` to read flat API fields (`p.author`, `p.content`) instead of nested `p.message.author_name`. Was showing "unknown" for all pending messages.
+- **Core memory correction**: Fixed entry `3d6e1a` — was incorrectly targeting majamiac instead of helmet for ignore instruction. Removed 2 duplicate entries (preference and context sections).
+- **Cache busting**: Bumped status.html script/CSS includes to `?v=3`.
+
+---
+
+## [2026-02-19f] — Coding Standards System
+
+### Added
+- **`docs/CODING_PATTERNS.md`**: Pattern bible for Claude Code sessions, adopted from upstream nanobot conventions. Copy-paste templates for tools, modules, tests, metrics instrumentation. Error handling decision tree (tools return strings, infrastructure raises, hooks log+continue). Google-style docstrings (Args/Returns on interfaces, one-liners on implementations). Two import styles documented: upstream (simple) vs Ene modules (with `__future__` + `TYPE_CHECKING`). Anti-patterns table with 13 DON'T/DO pairs. ~350 lines.
+- **`CLAUDE.md`**: New "Coding patterns (MUST READ)" section with 11 critical rules inlined — ensures agents get the essentials even without reading the full patterns doc. Emphasizes upstream alignment as rule #1.
+- **`docs/WHITELIST.md`**: Added S8 (import order), S9 (tools return strings), S10 (late-bind imports), S11 (file encoding), S12 (no silent exceptions), D6 (CODING_PATTERNS.md reference)
+- **`docs/SYSTEM_GUIDE.md`**: Added CODING_PATTERNS.md to the doc map
+
+---
+
+## [2026-02-19e] — System Guide
+
+### Added
+- **`docs/SYSTEM_GUIDE.md`**: "You are here" map for the entire project. Scannable, visual, written for humans not AI. Covers: message pipeline flow, where everything lives, all 6 modules, security model, configurable vs hardcoded settings, "How do I...?" quick-reference, "What happens when...?" scenario traces, doc map with read-this-when guidance, key numbers cheat sheet. ~330 lines, serves as the single entry point connecting all other docs.
+
+---
+
+## [2026-02-19d] — Module-Level Observability System
+
+### Added — ModuleMetrics Infrastructure
+- **`module_events` SQLite table**: New persistent storage for per-module structured events with trace_id, module, event_type, JSON data payload, and optional duration_ms
+- **`ModuleMetrics` class** (`nanobot/ene/observatory/module_metrics.py`): Per-module event recording with dual output (SQLite + LiveTracer SSE), `span()` context manager for automatic duration tracking, `NullModuleMetrics` no-op subclass
+- **Trace ID propagation**: Batch-scoped trace_id generated in `_process_batch()`, links all module events across the full pipeline for one message batch
+- **3 indexes** on module_events: timestamp, module+event_type, trace_id
+
+### Added — Module Instrumentation (5 modules, 18 event types)
+- **tracker** (6 events): thread_created, thread_assigned, thread_state_change, pending_promoted, ene_involved, context_built (with span duration)
+- **signals** (2 events): scored (full Naive Bayes feature breakdown: mention, reply_to_ene, temporal, author_history, conversation_state), override
+- **daemon** (3 events): classified, timeout, model_rotation
+- **cleaning** (1 event): cleaned (raw_length, clean_length, chars_removed, truncated, was_blocked)
+- **memory** (6 events): facts_extracted, diary_written, reflection_generated, contradiction_found, pruning_decision, budget_check
+
+### Added — Prompt Version Control
+- **9 prompt files** extracted from source to `nanobot/agent/prompts/*.txt` (daemon_system, summary_system/update/new, diary_system/user/fallback, identity_dad/public)
+- **`PromptLoader`** class with file caching, safe partial substitution, version tracking from manifest.json
+- **`manifest.json`**: version 1.0.0, lists all prompts with source files and template variables
+- Source files (loop.py, context.py, daemon/processor.py) now load prompts via PromptLoader — same text, loaded from files
+
+### Added — Dashboard + Tools
+- **Module Health panel** on live trace dashboard: shows tracker, signals, daemon, cleaning, memory, prompts stats
+- **`/api/live/modules` endpoint**: REST API for module health data (aggregated from module_events)
+- **`view_module` tool** (Dad-only): query module stats, classification distributions, thread lifecycle, trace events. Supports `module=`, `trace_id=`, `hours=` parameters
+- **Module event CSS class** (`evt-module`, purple) in dashboard timeline for `mod_*` events
+
+### Added — Query Methods on MetricsStore
+- `get_module_events(module, event_type, hours, limit)` — filtered module event retrieval
+- `get_module_summary(module, hours)` — event counts by type, avg durations
+- `get_trace_events(trace_id)` — cross-module trace for one batch
+- `get_classification_stats(hours)` — RESPOND/CONTEXT/DROP distribution, feature averages, override count
+- `get_thread_stats(hours)` — thread creation rate, assignment methods, avg lifespan, messages/thread
+
+### Tests
+- 25 new PromptLoader tests (`tests/agent/test_prompt_loader.py`)
+- 49 observatory tests (ModuleMetrics + store module_events) all pass
+- **937 total tests passing**, 0 failures
+
+### Files Modified
+- `nanobot/ene/observatory/store.py` — module_events table, 6 query methods
+- `nanobot/ene/observatory/module_metrics.py` — **NEW**: ModuleMetrics + NullModuleMetrics
+- `nanobot/ene/conversation/signals.py` — instrumented (scored, override events)
+- `nanobot/ene/conversation/tracker.py` — instrumented (6 thread lifecycle events)
+- `nanobot/ene/daemon/processor.py` — instrumented + prompt loaded from file
+- `nanobot/agent/response_cleaning.py` — instrumented (cleaned event)
+- `nanobot/ene/memory/sleep_agent.py` — instrumented (6 memory events)
+- `nanobot/agent/loop.py` — trace_id generation, ModuleMetrics wiring, PromptLoader
+- `nanobot/agent/context.py` — identity prompts loaded from files
+- `nanobot/agent/prompts/` — **NEW**: 9 .txt files, loader.py, manifest.json, __init__.py
+- `nanobot/ene/observatory/dashboard/static/live.html` — Module Health panel
+- `nanobot/ene/observatory/dashboard/static/live.js` — module health polling, mod_* events
+- `nanobot/ene/observatory/dashboard/static/live.css` — module event styling
+- `nanobot/ene/observatory/dashboard/api.py` — /api/live/modules endpoint
+- `nanobot/ene/observatory/tools.py` — ViewModuleTool
+- `nanobot/ene/observatory/__init__.py` — registered ViewModuleTool
+- `nanobot/agent/security.py` — view_module added to RESTRICTED_TOOLS
+- `tests/ene/observatory/test_module_metrics.py` — **NEW**: 22 tests
+- `tests/ene/observatory/test_store_module_events.py` — **NEW**: 20+ tests
+- `tests/agent/test_prompt_loader.py` — **NEW**: 25 tests
+- `docs/OBSERVABILITY.md` — **NEW**: module observability guide
+- `docs/WHITELIST.md` — A12-A15, D5
+- `docs/CHANGELOG.md` — this entry
+
+---
+
+## [2026-02-19c] — Model Recovery, Diary Fix, Model Mismatch
+
+### Added — Model Recovery Mechanism
+- **Recovery probe**: after 5 min cooldown, `chat()` probes the primary model before using fallback
+- **Snap-back on success**: if primary responds, `_model_index` resets to 0, failure counts cleared
+- **Silent failure**: if primary still down, stays on fallback with no side effects — try again in 5 min
+- **Zero happy-path overhead**: when already on primary, `_should_try_recovery()` returns False on second line
+- Clears `_model_failures[model]` on any successful chat (matches daemon processor pattern)
+
+### Fixed — Diary Consolidation Pattern-Lock (ROOT CAUSE of "templated" responses)
+- **Root cause found**: diary consolidation prompt generated flowery prose ("Ene noticed..., like [simile]") injected into every LLM call. DeepSeek saw its own templated output in context and pattern-locked.
+- **Feb 19 had 154 lines** of near-identical "Ene noticed [thing], like [poetic metaphor]" entries
+- **Rewrote consolidation prompt**: demands terse factual entries, explicitly bans similes/metaphors/poetry
+- **Switched diary model**: from DeepSeek (main) to Gemini 3 Flash (`consolidationModel` config) — different model breaks the pattern-lock
+- **Rewrote contaminated diary entries**: Feb 18-19 manually corrected to factual style matching Feb 16-17
+
+### Fixed — Model Mismatch in Fallback List
+- `DEFAULT_FALLBACK_MODELS[0]` was `deepseek/deepseek-chat-v3-0324` but config.json uses `deepseek/deepseek-v3.2`
+- These are different models on OpenRouter: v3.2 costs $0.28/M output, chat-v3-0324 costs $0.87/M output
+- Deploying fallback code would have silently switched to the expensive model
+- Fixed: `DEFAULT_FALLBACK_MODELS[0]` now matches config.json
+
+### Files Modified
+- `nanobot/providers/litellm_provider.py` — recovery mechanism, fixed fallback list primary model
+- `nanobot/agent/loop.py` — diary consolidation prompt rewrite
+- `nanobot/ene/observatory/pricing.py` — added Gemini 2.5 Flash + 3 Flash pricing
+- `~/.nanobot/config.json` — set `consolidationModel` to Gemini 3 Flash
+- `~/.nanobot/workspace/memory/diary/2026-02-18.md` — corrected entries, removed raw Dad ID
+- `~/.nanobot/workspace/memory/diary/2026-02-19.md` — condensed 154 flowery lines to 27 factual entries
+- `tests/providers/test_litellm_fallback.py` — 11 new recovery tests (863 total, 0 failures)
+- `docs/WHITELIST.md` — C11, C12, C13
+
+---
+
+## [2026-02-19b] — Stabilization: Model Fallback + Queue Merge + Debounce Tuning
+
+### Added — Model Fallback with Latency-Based Rotation
+- **Timeout on LLM calls**: 45s per attempt (was: infinite — provider blocked forever on OpenRouter disconnects)
+- **Fallback model rotation**: DeepSeek v3.2 → Qwen 3 235B → Gemini 2.5 Flash, all via OpenRouter (no new API keys)
+- **Retry-once strategy**: on timeout or error, rotates to next model and retries once. If retry also fails, returns error response (same as before but finite)
+- **Failure tracking**: per-model failure counts for observability
+- Adapted from daemon/processor.py rotation pattern (already proven in production)
+
+### Added — Queue Merge System
+- **Backlog merge**: when multiple batches are queued (LLM was slow), merges them all into one mega-batch so Ene reads everything at once and responds to the most relevant
+- **Merge cap**: max 30 messages per merged batch. Overflow drops oldest messages (newest are most relevant)
+- **Live trace events**: `queue_merge` and `queue_merge_drop` emitted for dashboard visibility
+- Prevents "responding to stale conversations one by one" when batches pile up
+
+### Changed — Debounce Parameter Tuning
+- Debounce window: 2.0s → 3.5s (more time for message bursts to settle)
+- Batch limit: 10 → 15 (higher threshold before force-flush)
+- Buffer hard cap: 20 → 40 (queue merge handles overflow, so cap can be higher)
+
+### Files Modified
+- `nanobot/providers/litellm_provider.py` — timeout, fallback rotation, retry-once logic
+- `nanobot/agent/loop.py` — queue merge in `_process_queue()`, debounce constants, merge cap
+- `nanobot/cli/commands.py` — pass DEFAULT_FALLBACK_MODELS to provider
+
+### Files Created
+- `tests/providers/test_litellm_fallback.py` — 18 tests for fallback/rotation/timeout
+- `tests/test_queue_merge.py` — 9 tests for queue merge and debounce constants
+
+### Whitelist Entries
+- C7: Main LLM fallback model rotation
+- C8: 45s timeout per LLM call, retry once
+- C9: Queue merge system
+- C10: Debounce tuning (3.5s/15/40)
+
+### Test Count
+- 852 tests total (was 825), 0 regressions
+
+---
+
+## [2026-02-19a] — Development Lab Infrastructure
+
+### Added — Complete Lab Environment for Isolated Testing
+- **MockChannel** (`nanobot/channels/mock.py`): programmatic message injection and response capture, same `_handle_message()` path as Discord/Telegram
+- **RecordReplayProvider** (`nanobot/providers/record_replay.py`): VCR-style LLM response caching — record once, replay forever at $0. Four modes: record, replay, replay_or_live, passthrough
+- **Lab state management** (`nanobot/lab/state.py`): named immutable snapshots, isolated run instances, fork support, identity seeding
+- **Lab harness** (`nanobot/lab/harness.py`): main orchestrator — wires AgentLoop with isolated state, MockChannel, RecordReplayProvider
+- **Audit system** (`nanobot/lab/audit.py`): captures all LiveTracer events for post-run analysis
+- **Audit diff** (`nanobot/lab/diff.py`): compares two audit trails for regression detection
+- **Stress testing** (`nanobot/lab/stress.py`): multi-user, trust ladder, flood, DM generators + state verifiers (tau-bench pattern)
+- **CLI commands**: `nanobot lab snapshot create/list/delete`, `nanobot lab run`, `nanobot lab stress`, `nanobot lab diff`, `nanobot lab audit`
+- **Path configurability**: `set_data_path()` override + `NANOBOT_DATA_DIR` env var in helpers.py, `sessions_dir` parameter in SessionManager
+- **Documentation**: `docs/TESTING.md` (complete testing guide), `docs/DEVELOPMENT.md` (development workflow), `docs/LAB_RESEARCH.md` (research notes)
+- **100 new tests** across 6 test files (825 total, 0 regressions)
+
+### Research Basis
+- Anthropic Bloom (behavioral eval suites), OpenAI Evals (trace grading), Letta Evals (stateful agent memory testing), Docker Cagent (VCR record/replay), Block Engineering (TestProvider pattern), tau-bench (state verification over text matching), IntellAgent (policy-graph scenario generation), CLEAR framework (Cost/Latency/Efficacy/Assurance/Reliability)
+
+### Files Created
+- `nanobot/channels/mock.py` — MockChannel
+- `nanobot/providers/record_replay.py` — RecordReplayProvider
+- `nanobot/lab/__init__.py` — Lab package
+- `nanobot/lab/state.py` — Snapshot and run management
+- `nanobot/lab/harness.py` — Lab harness orchestrator
+- `nanobot/lab/audit.py` — Audit event collector
+- `nanobot/lab/diff.py` — Audit trail comparison
+- `nanobot/lab/stress.py` — Stress test generators + state verifiers
+- `tests/channels/__init__.py`, `tests/channels/test_mock.py` — 15 tests
+- `tests/providers/__init__.py`, `tests/providers/test_record_replay.py` — 17 tests
+- `tests/lab/__init__.py`, `tests/lab/test_state.py` — 25 tests
+- `tests/lab/test_harness.py` — 11 tests
+- `tests/lab/test_audit.py` — 13 tests
+- `tests/lab/test_stress.py` — 19 tests
+- `docs/TESTING.md` — Complete testing guide
+- `docs/DEVELOPMENT.md` — Development workflow guide
+- `docs/LAB_RESEARCH.md` — Research notes
+
+### Files Modified
+- `nanobot/utils/helpers.py` — Added `set_data_path()`, `_DATA_PATH_OVERRIDE`, env var `NANOBOT_DATA_DIR`, `get_sessions_path()`
+- `nanobot/session/manager.py` — Added `sessions_dir` parameter to SessionManager
+- `nanobot/cli/commands.py` — Added `lab` subcommand group with 7 commands
+- `docs/WHITELIST.md` — Added T6-T10 (testing), A8-A11 (architecture) entries
+- `docs/CHANGELOG.md` — This entry
+- `CLAUDE.md` — Updated testing section, added lab section, added doc references
+
+---
+
 ## [2026-02-18q] — Live Processing Dashboard
 
 ### Added — Real-Time Message Processing Dashboard

@@ -15,7 +15,7 @@ from loguru import logger
 DAD_IDS: set[str] = {"telegram:8559611823", "discord:1175414972482846813"}
 RESTRICTED_TOOLS: set[str] = {
     "exec", "write_file", "edit_file", "read_file", "list_dir",
-    "spawn", "cron", "view_metrics", "view_experiments",
+    "spawn", "cron", "view_metrics", "view_experiments", "view_module",
 }
 
 # Word-boundary match to avoid false positives ("generic", "scene", etc.)

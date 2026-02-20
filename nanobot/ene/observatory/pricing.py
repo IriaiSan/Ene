@@ -27,6 +27,8 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "anthropic/claude-3-haiku": {"input": 0.25, "output": 1.25},
     # Google (via OpenRouter)
     "google/gemini-2.0-flash": {"input": 0.10, "output": 0.40},
+    "google/gemini-2.5-flash": {"input": 0.30, "output": 2.50},
+    "google/gemini-3-flash-preview": {"input": 0.50, "output": 3.00},
     "google/gemini-pro-1.5": {"input": 1.25, "output": 5.00},
     # Meta (via OpenRouter)
     "meta-llama/llama-3.1-70b-instruct": {"input": 0.52, "output": 0.75},

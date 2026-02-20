@@ -1,0 +1,60 @@
+{
+    "version": "1.0.0",
+    "updated": "2026-02-19",
+    "prompts": {
+        "daemon_system": {
+            "file": "daemon_system.txt",
+            "source": "nanobot/ene/daemon/processor.py",
+            "description": "Security daemon pre-classifier system prompt",
+            "variables": []
+        },
+        "summary_system": {
+            "file": "summary_system.txt",
+            "source": "nanobot/agent/loop.py",
+            "description": "Running summary system prompt",
+            "variables": []
+        },
+        "summary_update": {
+            "file": "summary_update.txt",
+            "source": "nanobot/agent/loop.py",
+            "description": "Update existing running summary with new messages",
+            "variables": ["existing_summary", "older_text"]
+        },
+        "summary_new": {
+            "file": "summary_new.txt",
+            "source": "nanobot/agent/loop.py",
+            "description": "Create new running summary from conversation",
+            "variables": ["older_text"]
+        },
+        "diary_system": {
+            "file": "diary_system.txt",
+            "source": "nanobot/agent/loop.py",
+            "description": "Diary consolidation system prompt",
+            "variables": []
+        },
+        "diary_user": {
+            "file": "diary_user.txt",
+            "source": "nanobot/agent/loop.py",
+            "description": "Diary consolidation user prompt with participants",
+            "variables": ["roster", "conversation"]
+        },
+        "diary_fallback": {
+            "file": "diary_fallback.txt",
+            "source": "nanobot/agent/loop.py",
+            "description": "Diary consolidation fallback (no roster)",
+            "variables": ["conversation"]
+        },
+        "identity_dad": {
+            "file": "identity_dad.txt",
+            "source": "nanobot/agent/context.py",
+            "description": "Full identity block for Dad (technical details included)",
+            "variables": ["now", "tz", "runtime", "workspace_path"]
+        },
+        "identity_public": {
+            "file": "identity_public.txt",
+            "source": "nanobot/agent/context.py",
+            "description": "Stripped identity block for non-Dad callers",
+            "variables": ["now", "tz", "mute_context"]
+        }
+    }
+}

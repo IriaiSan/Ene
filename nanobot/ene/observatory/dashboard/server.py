@@ -52,6 +52,7 @@ class DashboardServer:
         self._live_tracer: "LiveTracer | None" = None
         self._set_live_tracer_fn = None  # Set by _create_app, used by set_live_tracer
         self._set_reset_callback_fn = None  # Set by _create_app, used by set_reset_callback
+        self._control_api = None  # Set by _create_app, ControlAPI facade for control panel
 
     def _create_app(self) -> web.Application:
         """Create the aiohttp application."""
@@ -62,14 +63,14 @@ class DashboardServer:
         async def cors_middleware(request: web.Request, handler):
             response = await handler(request)
             response.headers["Access-Control-Allow-Origin"] = "*"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
             response.headers["Access-Control-Allow-Headers"] = "Content-Type"
             return response
 
         app.middlewares.append(cors_middleware)
 
-        # API routes (returns routes + setters for late-binding LiveTracer and reset callback)
-        api_routes, self._set_live_tracer_fn, self._set_reset_callback_fn = create_api_routes(
+        # API routes (returns routes + setters for late-binding LiveTracer, reset callback, and ControlAPI)
+        api_routes, self._set_live_tracer_fn, self._set_reset_callback_fn, self._control_api = create_api_routes(
             self._store, self._health, self._reporter,
             live_tracer=self._live_tracer,
         )
@@ -85,8 +86,18 @@ class DashboardServer:
             async def live_page(request: web.Request) -> web.FileResponse:
                 return web.FileResponse(STATIC_DIR / "live.html")
 
+            # Serve control.html at /control
+            async def control_page(request: web.Request) -> web.FileResponse:
+                return web.FileResponse(STATIC_DIR / "control.html")
+
+            # Serve status.html at /status
+            async def status_page(request: web.Request) -> web.FileResponse:
+                return web.FileResponse(STATIC_DIR / "status.html")
+
             app.router.add_get("/", index)
             app.router.add_get("/live", live_page)
+            app.router.add_get("/control", control_page)
+            app.router.add_get("/status", status_page)
             app.router.add_static("/static/", STATIC_DIR, name="static")
         else:
             logger.warning(f"Dashboard static dir not found: {STATIC_DIR}")
@@ -112,6 +123,15 @@ class DashboardServer:
         """
         if self._set_reset_callback_fn:
             self._set_reset_callback_fn(cb)
+
+    def set_control_api_loop(self, loop) -> None:
+        """Wire the AgentLoop reference into the ControlAPI facade.
+
+        Called by AgentLoop after module initialization. Enables all
+        control panel endpoints (people, memory, threads, sessions, security, brain).
+        """
+        if self._control_api:
+            self._control_api.loop = loop
 
     async def start(self) -> None:
         """Start the dashboard server."""

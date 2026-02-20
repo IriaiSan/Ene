@@ -296,3 +296,94 @@ class TestConversationTracker:
         assert len(tracker._pending) == 2
         assert tracker._pending[0].channel_key == "discord:chan1"
         assert tracker._pending[1].channel_key == "discord:chan2"
+
+    def test_mark_ene_responded_sets_ene_responded_flag(self, tracker: ConversationTracker):
+        """mark_ene_responded sets both ene_involved AND ene_responded."""
+        msg1 = make_inbound(msg_id="m1", sender_id="100", content="hello")
+        msg2 = make_inbound(msg_id="m2", sender_id="100", content="ene help")
+        tracker.ingest_batch([msg1, msg2], [], "discord:chan1")
+
+        thread = list(tracker._threads.values())[0]
+        assert thread.ene_responded is False
+
+        response_msg = InboundMessage(
+            channel="discord",
+            sender_id="100",
+            chat_id="chan1",
+            content="how can I help",
+            metadata={"message_ids": ["m1"]},
+        )
+        tracker.mark_ene_responded(response_msg)
+        assert thread.ene_involved is True
+        assert thread.ene_responded is True
+
+
+class TestBatchParticipantIds:
+    """Tests for get_batch_participant_ids() — Scene Brief participant extraction."""
+
+    @pytest.fixture
+    def tracker(self, tmp_path: Path) -> ConversationTracker:
+        t = ConversationTracker(thread_dir=tmp_path / "threads")
+        t._storage.ensure_dirs()
+        return t
+
+    def test_single_respond_message(self, tracker):
+        """Single respond message → its sender as participant."""
+        msg = make_inbound(msg_id="m1", sender_id="100")
+        ids = tracker.get_batch_participant_ids([msg], [], "discord:chan1")
+        assert ids == ["discord:100"]
+
+    def test_respond_and_context_messages(self, tracker):
+        """Respond senders come first, then context senders."""
+        respond = make_inbound(msg_id="r1", sender_id="100")
+        context = make_inbound(msg_id="c1", sender_id="200")
+        ids = tracker.get_batch_participant_ids([respond], [context], "discord:chan1")
+        assert ids == ["discord:100", "discord:200"]
+
+    def test_dedup_across_respond_and_context(self, tracker):
+        """Same sender in both respond and context → deduplicated."""
+        respond = make_inbound(msg_id="r1", sender_id="100")
+        context = make_inbound(msg_id="c1", sender_id="100")
+        ids = tracker.get_batch_participant_ids([respond], [context], "discord:chan1")
+        assert ids == ["discord:100"]
+
+    def test_includes_active_thread_participants(self, tracker):
+        """Participants from active ene-involved threads are included."""
+        # Create a thread and mark ene_involved
+        msg1 = make_inbound(msg_id="m1", sender_id="300", content="hello")
+        msg2 = make_inbound(msg_id="m2", sender_id="300", content="world")
+        tracker.ingest_batch([msg1, msg2], [], "discord:chan1")
+        thread = list(tracker._threads.values())[0]
+        thread.ene_involved = True
+
+        # New batch from a different sender
+        respond = make_inbound(msg_id="r1", sender_id="100")
+        ids = tracker.get_batch_participant_ids([respond], [], "discord:chan1")
+
+        assert "discord:100" in ids
+        assert "discord:300" in ids
+        # Respond sender should come first
+        assert ids.index("discord:100") < ids.index("discord:300")
+
+    def test_excludes_different_channel_threads(self, tracker):
+        """Thread participants from other channels are not included."""
+        msg1 = make_inbound(msg_id="m1", sender_id="300", chat_id="chan2", content="hello")
+        msg2 = make_inbound(msg_id="m2", sender_id="300", chat_id="chan2", content="world")
+        tracker.ingest_batch([msg1, msg2], [], "discord:chan2")
+        thread = list(tracker._threads.values())[0]
+        thread.ene_involved = True
+
+        respond = make_inbound(msg_id="r1", sender_id="100", chat_id="chan1")
+        ids = tracker.get_batch_participant_ids([respond], [], "discord:chan1")
+
+        assert ids == ["discord:100"]
+        assert "discord:300" not in ids
+
+    def test_multiple_respond_senders_ordered(self, tracker):
+        """Multiple respond senders maintain order."""
+        r1 = make_inbound(msg_id="r1", sender_id="100")
+        r2 = make_inbound(msg_id="r2", sender_id="200")
+        r3 = make_inbound(msg_id="r3", sender_id="300")
+
+        ids = tracker.get_batch_participant_ids([r1, r2, r3], [], "discord:chan1")
+        assert ids == ["discord:100", "discord:200", "discord:300"]

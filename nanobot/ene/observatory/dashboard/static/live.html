@@ -13,9 +13,12 @@
         <div class="status-left">
             <span class="logo">Ene Live Trace</span>
             <a href="/" class="nav-link">Metrics</a>
+            <a href="/status" class="nav-link">Status</a>
+            <a href="/control" class="nav-link">Control</a>
             <span id="connection-badge" class="badge">connecting</span>
         </div>
         <div class="status-right">
+            <span id="brain-indicator" class="badge" title="Brain status">🧠 --</span>
             <button id="btn-hard-reset" class="ctrl-btn ctrl-btn-danger" title="Drop all queues, clear session, fresh start">⚡ Hard Reset</button>
             <button id="btn-clear" class="ctrl-btn" title="Clear timeline">Clear</button>
             <button id="btn-pause" class="ctrl-btn" title="Pause auto-scroll">⏸ Pause</button>
@@ -56,6 +59,13 @@
             </section>
 
             <section class="state-section">
+                <h3>Module Health</h3>
+                <div id="module-health" class="module-health">
+                    <span class="muted">Loading...</span>
+                </div>
+            </section>
+
+            <section class="state-section">
                 <h3>Legend</h3>
                 <div class="legend">
                     <div class="legend-item"><span class="dot dot-arrival"></span> Arrival</div>
@@ -64,6 +74,7 @@
                     <div class="legend-item"><span class="dot dot-tool"></span> Tool</div>
                     <div class="legend-item"><span class="dot dot-output"></span> Output</div>
                     <div class="legend-item"><span class="dot dot-error"></span> Error</div>
+                    <div class="legend-item"><span class="dot dot-module"></span> Module</div>
                 </div>
             </section>
         </aside>

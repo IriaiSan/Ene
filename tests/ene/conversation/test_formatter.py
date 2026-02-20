@@ -17,6 +17,7 @@ from nanobot.ene.conversation.formatter import (
     _format_age,
     _format_thread_message,
     build_threaded_context,
+    build_single_thread_context,
 )
 
 
@@ -111,10 +112,22 @@ class TestFormatAge:
 
 
 class TestFormatThreadMessage:
-    def test_basic_format(self):
+    def test_basic_format_no_tag(self):
+        """Default (with_tag=False): no #msgN prefix, counter unchanged."""
         msg = make_thread_msg(msg_id="m1", author="Alice", username="alice")
         msg_id_map = {}
         line, next_counter = _format_thread_message(msg, 1, msg_id_map)
+        assert line == "Alice (@alice): hello"
+        assert "#msg1" not in msg_id_map
+        assert next_counter == 1  # Counter unchanged
+
+    def test_basic_format_with_tag(self):
+        """with_tag=True: #msgN prefix, counter incremented, map populated."""
+        msg = make_thread_msg(msg_id="m1", author="Alice", username="alice")
+        msg_id_map = {}
+        line, next_counter = _format_thread_message(
+            msg, 1, msg_id_map, with_tag=True
+        )
         assert line == "#msg1 Alice (@alice): hello"
         assert msg_id_map["#msg1"] == "m1"
         assert next_counter == 2
@@ -122,8 +135,14 @@ class TestFormatThreadMessage:
     def test_ene_format(self):
         msg = make_thread_msg(is_ene=True, content="sure I can help")
         msg_id_map = {}
-        line, _ = _format_thread_message(msg, 1, msg_id_map)
+        line, _ = _format_thread_message(msg, 1, msg_id_map, with_tag=True)
         assert line.startswith("#msg1 Ene:")
+
+    def test_ene_format_no_tag(self):
+        msg = make_thread_msg(is_ene=True, content="sure I can help")
+        msg_id_map = {}
+        line, _ = _format_thread_message(msg, 1, msg_id_map)
+        assert line == "Ene: sure I can help"
 
     def test_same_name_and_username(self):
         msg = make_thread_msg(author="alice", username="alice")
@@ -228,7 +247,7 @@ class TestBuildThreadedContext:
         assert "earlier messages omitted" in result.content
 
     def test_msg_id_map_populated(self):
-        """msg_id_map maps #msgN → real Discord IDs."""
+        """msg_id_map maps #msgN → real Discord IDs (only last non-Ene tagged)."""
         msgs = [
             make_thread_msg(msg_id="discord_001", author="Alice", content="hey"),
             make_thread_msg(msg_id="discord_002", author="Bob", content="hi"),
@@ -246,8 +265,9 @@ class TestBuildThreadedContext:
         )
 
         msg_map = result.metadata["msg_id_map"]
+        # Only the last non-Ene message (Bob, discord_002) should be tagged
         assert "#msg1" in msg_map
-        assert msg_map["#msg1"] == "discord_001"
+        assert msg_map["#msg1"] == "discord_002"
 
     def test_unthreaded_section(self):
         """Pending messages appear in unthreaded section."""
@@ -353,3 +373,116 @@ class TestBuildThreadedContext:
         )
 
         assert "(stale)" in result.content
+
+
+# ── Tests for build_single_thread_context (Phase 2.3) ────────────────────
+
+
+class TestBuildSingleThreadContext:
+    """Test per-thread focused context formatting."""
+
+    def test_basic_single_thread(self):
+        """Focus thread content shows respond section."""
+        msgs = [
+            make_thread_msg(msg_id="m1", author="Alice", content="hey ene"),
+            make_thread_msg(msg_id="m2", author="Alice", content="can you help?"),
+        ]
+        thread = make_thread(ene_involved=True, messages=msgs)
+
+        content, msg_id_map, primary = build_single_thread_context(
+            focus_thread=thread,
+            all_threads={thread.thread_id: thread},
+            pending=[],
+            channel_key="discord:chan1",
+        )
+
+        assert "[your conversation" in content
+        assert "Alice" in content
+        assert "hey ene" in content
+        assert primary == "Alice"
+
+    def test_primary_is_non_ene_speaker(self):
+        """Primary author is the most recent non-Ene speaker."""
+        msgs = [
+            make_thread_msg(msg_id="m1", author="Bob", content="q"),
+            make_thread_msg(msg_id="m2", author="Ene", content="a", is_ene=True),
+            make_thread_msg(msg_id="m3", author="Bob", content="followup"),
+        ]
+        thread = make_thread(ene_involved=True, messages=msgs)
+
+        _, _, primary = build_single_thread_context(
+            thread, {thread.thread_id: thread}, [], "discord:chan1"
+        )
+        assert primary == "Bob"
+
+    def test_msg_id_map(self):
+        """msg_id_map maps #msgN to Discord message IDs."""
+        msgs = [make_thread_msg(msg_id="d_001", author="Alice", content="hello")]
+        thread = make_thread(ene_involved=True, messages=msgs)
+
+        _, msg_id_map, _ = build_single_thread_context(
+            thread, {thread.thread_id: thread}, [], "discord:chan1"
+        )
+
+        assert "#msg1" in msg_id_map
+        assert msg_id_map["#msg1"] == "d_001"
+
+    def test_other_threads_as_background(self):
+        """Other threads appear in background section."""
+        focus_msgs = [make_thread_msg(msg_id="m1", author="Alice", content="main")]
+        focus = make_thread(ene_involved=True, messages=focus_msgs)
+
+        bg_msgs = [make_thread_msg(msg_id="m2", author="Charlie", content="side convo")]
+        bg = make_thread(ene_involved=False, messages=bg_msgs)
+
+        all_threads = {focus.thread_id: focus, bg.thread_id: bg}
+        content, _, _ = build_single_thread_context(
+            focus, all_threads, [], "discord:chan1"
+        )
+
+        assert "[background" in content
+        assert "Charlie" in content
+
+    def test_does_not_mutate_last_shown_index(self):
+        """Must NOT change last_shown_index on the focus thread."""
+        msgs = [make_thread_msg(msg_id="m1", author="Alice", content="hello")]
+        thread = make_thread(ene_involved=True, messages=msgs)
+        original = thread.last_shown_index
+
+        build_single_thread_context(
+            thread, {thread.thread_id: thread}, [], "discord:chan1"
+        )
+
+        assert thread.last_shown_index == original
+
+    def test_follow_up_shows_only_new(self):
+        """When last_shown_index > 0, shows only new messages."""
+        msgs = [
+            make_thread_msg(msg_id="m1", author="Alice", content="old"),
+            make_thread_msg(msg_id="m2", author="Alice", content="also old"),
+            make_thread_msg(msg_id="m3", author="Alice", content="NEW msg"),
+        ]
+        thread = make_thread(ene_involved=True, messages=msgs)
+        thread.last_shown_index = 2
+
+        content, _, _ = build_single_thread_context(
+            thread, {thread.thread_id: thread}, [], "discord:chan1"
+        )
+
+        assert "NEW msg" in content
+        assert "continued" in content
+
+    def test_excludes_other_channel(self):
+        """Threads from other channels don't appear."""
+        focus_msgs = [make_thread_msg(msg_id="m1", author="Alice", content="main")]
+        focus = make_thread(ene_involved=True, messages=focus_msgs, channel="discord:chan1")
+
+        other_msgs = [make_thread_msg(msg_id="m2", author="Eve", content="other")]
+        other = make_thread(ene_involved=True, messages=other_msgs, channel="discord:chan2")
+
+        all_threads = {focus.thread_id: focus, other.thread_id: other}
+        content, _, _ = build_single_thread_context(
+            focus, all_threads, [], "discord:chan1"
+        )
+
+        assert "Eve" not in content

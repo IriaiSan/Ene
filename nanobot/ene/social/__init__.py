@@ -122,6 +122,132 @@ class SocialModule(EneModule):
 
         self._current_person = self._registry.get_by_platform_id(platform_id)
 
+    def _render_person_card(self, person: Any, full: bool = True) -> str:
+        """Render a person's info card.
+
+        Args:
+            person: PersonProfile to render.
+            full: If True, render full card (~100 tokens). If False, compact one-liner (~15 tokens).
+        """
+        from nanobot.ene.social.trust import TrustCalculator
+
+        trust = person.trust
+        trust_pct = int(trust.score * 100)
+        msg_count = trust.signals.get("message_count", 0)
+        days_active = trust.signals.get("days_active", 0)
+
+        # Get stable username
+        username_str = ""
+        for pid_key, pid_val in person.platform_ids.items():
+            if isinstance(pid_val, dict):
+                uname = pid_val.get("username", "")
+            else:
+                uname = pid_val.username
+            if uname and uname != person.display_name.lower():
+                username_str = f" @{uname}"
+                break
+
+        if not full:
+            # Compact one-liner for "Also present" list
+            summary_snippet = ""
+            if person.summary:
+                summary_snippet = f" — {person.summary[:120]}"
+            return f"- {person.display_name}{username_str} ({trust.tier}, {trust_pct}%){summary_snippet}"
+
+        # Full card for primary target
+        approach = {
+            "stranger": "Be polite but guarded. Don't share details about Dad or others.",
+            "acquaintance": "Be friendly. Open to conversation but cautious with personal info.",
+            "familiar": "Be warm and friendly. Share opinions. Remember their interests.",
+            "trusted": "Be yourself. Share thoughts freely. Trust is mutual.",
+            "inner_circle": "Full trust. Be completely open. This is one of your closest people.",
+        }.get(trust.tier, "Be polite.")
+
+        alias_str = ""
+        other_aliases = [a for a in person.aliases if a != person.display_name]
+        if other_aliases:
+            alias_str = f"Also known as: {', '.join(other_aliases[:5][:80])}"
+
+        conn_str = ""
+        if self._graph:
+            conn_str = self._graph.render_for_context(person.id)
+
+        lines = [
+            f"**{person.display_name}**{username_str} ({trust.tier}, {trust_pct}%, "
+            f"{msg_count} msgs over {days_active} days)",
+        ]
+
+        if person.summary:
+            lines.append(person.summary[:120])
+
+        if alias_str:
+            lines.append(alias_str)
+
+        if conn_str:
+            lines.append(conn_str)
+
+        lines.append(f"Approach: {approach[:150]}")
+
+        return "\n".join(lines)
+
+    def _render_unknown_card(self, platform_id: str, full: bool = True) -> str:
+        """Render a card for an unknown person."""
+        if not full:
+            return f"- Unknown ({platform_id.split(':')[-1][:8]}) (stranger, 0%)"
+        return (
+            f"**Unknown** (stranger, 0%, first contact)\n"
+            f"New person — {platform_id}. No prior interactions.\n"
+            "Approach: Be polite but guarded. Don't share details about Dad or others."
+        )
+
+    def get_scene_context(self, primary_id: str, participant_ids: list[str]) -> str:
+        """Build a multi-person Scene Brief for the system prompt.
+
+        Computed once per batch, reused across all per-thread LLM calls.
+        Shows the primary target with a full card and other participants
+        as compact one-liners.
+
+        Args:
+            primary_id: Platform ID of the person being responded to.
+            participant_ids: All platform IDs present in the batch.
+        """
+        if self._registry is None:
+            return ""
+
+        lines = ["## Scene"]
+
+        # Primary target — full card
+        primary_person = self._registry.get_by_platform_id(primary_id)
+        if primary_person:
+            lines.append(f"**Primary target:** {self._render_person_card(primary_person, full=True)}")
+        else:
+            lines.append(f"**Primary target:** {self._render_unknown_card(primary_id, full=True)}")
+
+        # Other participants — compact one-liners, cap at 6
+        others = [pid for pid in participant_ids if pid != primary_id]
+        seen_ids = set()  # Dedup
+        other_lines = []
+
+        for pid in others:
+            if pid in seen_ids:
+                continue
+            seen_ids.add(pid)
+
+            person = self._registry.get_by_platform_id(pid)
+            if person:
+                other_lines.append(self._render_person_card(person, full=False))
+            else:
+                other_lines.append(self._render_unknown_card(pid, full=False))
+
+            if len(other_lines) >= 6:
+                break
+
+        if other_lines:
+            lines.append("\n**Also present:**")
+            lines.extend(other_lines)
+
+        return "\n".join(lines)
+
     def get_context_block_for_message(self, message: str) -> str | None:
         """Return person card for the current speaker.
 
@@ -134,66 +260,15 @@ class SocialModule(EneModule):
         person = self._current_person
 
         if person is None:
-            # Unknown person
             return (
                 "## Current Speaker\n"
-                f"**Unknown** (stranger, 0%, first contact)\n"
-                f"New person — {self._current_platform_id}. No prior interactions.\n"
-                "Ene's approach: Be polite but guarded. Don't share details about Dad or others."
+                + self._render_unknown_card(self._current_platform_id, full=True)
             )
-
-        trust = person.trust
-        trust_pct = int(trust.score * 100)
-        msg_count = trust.signals.get("message_count", 0)
-        days_active = trust.signals.get("days_active", 0)
-
-        # Connection summary
-        conn_str = ""
-        if self._graph:
-            conn_str = self._graph.render_for_context(person.id)
-
-        # Build approach guidance based on tier
-        approach = {
-            "stranger": "Be polite but guarded. Don't share details about Dad or others.",
-            "acquaintance": "Be friendly. Open to conversation but cautious with personal info.",
-            "familiar": "Be warm and friendly. Share opinions. Remember their interests.",
-            "trusted": "Be yourself. Share thoughts freely. Trust is mutual.",
-            "inner_circle": "Full trust. Be completely open. This is one of your closest people.",
-        }.get(trust.tier, "Be polite.")
-
-        # Get stable username from platform identity (nicknames change, usernames don't)
-        username_str = ""
-        for pid_key, pid_val in person.platform_ids.items():
-            if isinstance(pid_val, dict):
-                uname = pid_val.get("username", "")
-            else:
-                uname = pid_val.username
-            if uname and uname != person.display_name.lower():
-                username_str = f" @{uname}"
-                break  # Use first available
-
-        # Also include known aliases for disambiguation
-        alias_str = ""
-        other_aliases = [a for a in person.aliases if a != person.display_name]
-        if other_aliases:
-            alias_str = f"Also known as: {', '.join(other_aliases[:5])}"
 
         lines = [
             "## Current Speaker",
-            f"**{person.display_name}**{username_str} ({trust.tier}, {trust_pct}%, "
-            f"{msg_count} msgs over {days_active} days)",
+            self._render_person_card(person, full=True),
         ]
-
-        if person.summary:
-            lines.append(person.summary)
-
-        if alias_str:
-            lines.append(alias_str)
-
-        if conn_str:
-            lines.append(conn_str)
-
-        lines.append(f"Ene's approach: {approach}")
 
         return "\n".join(lines)
 

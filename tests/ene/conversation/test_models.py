@@ -186,6 +186,28 @@ class TestThread:
         t.add_message(make_msg(author_id="discord:a"))
         assert t.participant_count == 2
 
+    def test_ene_responded_default_false(self):
+        """New threads have ene_responded=False."""
+        t = Thread.new("discord:chan1")
+        assert t.ene_responded is False
+
+    def test_ene_responded_serialization(self):
+        """ene_responded flag persists through serialization."""
+        t = Thread.new("discord:chan1")
+        t.ene_responded = True
+        d = t.to_dict()
+        assert d["ene_responded"] is True
+
+        restored = Thread.from_dict(d)
+        assert restored.ene_responded is True
+
+    def test_ene_responded_missing_in_dict(self):
+        """Old serialized threads without ene_responded default to False."""
+        d = Thread.new("discord:chan1").to_dict()
+        del d["ene_responded"]
+        restored = Thread.from_dict(d)
+        assert restored.ene_responded is False
+
 
 # ── PendingMessage tests ────────────────────────────────────────────────
 

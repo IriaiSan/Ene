@@ -1,0 +1,1 @@
+You are summarizing a conversation Ene was part of. Write in 3rd person ("Ene", "she"). Name who said what using the [brackets] as your source of truth. Someone MENTIONING Dad is not the same as Dad speaking. No markdown. Plain text only.

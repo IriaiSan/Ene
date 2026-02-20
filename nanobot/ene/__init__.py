@@ -126,6 +126,7 @@ class ModuleRegistry:
         self._current_sender_id: str = ""
         self._current_channel: str = ""
         self._current_metadata: dict = {}
+        self._scene_participant_ids: list[str] | None = None  # Set by loop.py per batch
 
     def set_current_sender(
         self, sender_id: str, channel: str, metadata: dict
@@ -147,6 +148,19 @@ class ModuleRegistry:
     def get_current_metadata(self) -> dict:
         """Get current sender's metadata."""
         return self._current_metadata
+
+    def set_scene_participants(self, participant_ids: list[str]) -> None:
+        """Set participant IDs for Scene Brief generation.
+
+        Called from loop.py after ingest_batch(). When set, the social
+        module's get_scene_context() replaces the single-person card
+        in get_all_dynamic_context().
+        """
+        self._scene_participant_ids = participant_ids
+
+    def clear_scene_participants(self) -> None:
+        """Clear scene participants after batch processing."""
+        self._scene_participant_ids = None
 
     def get_module(self, name: str) -> "EneModule | None":
         """Get a module by name (alias for get)."""
@@ -206,7 +220,9 @@ class ModuleRegistry:
         """Aggregate dynamic context from all modules for a given message.
 
         First tells modules who is speaking (via set_sender_context),
-        then collects dynamic context blocks.
+        then collects dynamic context blocks. If scene participants are
+        set (multi-person batch), uses get_scene_context() on the social
+        module instead of the single-person card.
         Returns a single string with all dynamic blocks joined by newlines.
         """
         # Tell modules who is speaking before asking for context
@@ -222,8 +238,29 @@ class ModuleRegistry:
                     )
 
         blocks: list[str] = []
+
+        # If scene participants are set, use scene context from social module
+        # instead of the per-module loop for the social module's card
+        scene_used = False
+        if self._scene_participant_ids is not None:
+            social_mod = self._modules.get("social")
+            if social_mod and hasattr(social_mod, "get_scene_context"):
+                try:
+                    scene_block = social_mod.get_scene_context(
+                        primary_id=platform_id,
+                        participant_ids=self._scene_participant_ids,
+                    )
+                    if scene_block:
+                        blocks.append(scene_block)
+                        scene_used = True
+                except Exception as e:
+                    logger.error(f"Error getting scene context from social: {e}")
+
         for module in self._modules.values():
             try:
+                # Skip social module's per-message card if scene context was used
+                if scene_used and module.name == "social":
+                    continue
                 block = module.get_context_block_for_message(message)
                 if block:
                     blocks.append(block)

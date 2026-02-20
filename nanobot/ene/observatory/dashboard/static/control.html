@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ene — Control Panel</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/control.css">
+</head>
+<body class="control-body">
+    <!-- Header -->
+    <header id="status-bar">
+        <div class="status-left">
+            <span class="logo">Ene Control Panel</span>
+            <a href="/" class="nav-link">Metrics</a>
+            <a href="/status" class="nav-link">Status</a>
+            <a href="/live" class="nav-link">Live Trace</a>
+            <span id="health-badge" class="badge">--</span>
+        </div>
+        <div class="status-right">
+            <button id="btn-brain" class="brain-toggle" title="Toggle brain (LLM responses)">
+                <span class="brain-icon">🧠</span>
+                <span id="brain-label">Loading...</span>
+            </button>
+        </div>
+    </header>
+
+    <div class="control-layout">
+        <!-- Left: Tab navigation -->
+        <nav id="tab-nav">
+            <button class="tab-btn active" data-tab="people">👥 People</button>
+            <button class="tab-btn" data-tab="memory">🧠 Memory</button>
+            <button class="tab-btn" data-tab="threads">💬 Threads</button>
+            <button class="tab-btn" data-tab="sessions">📋 Sessions</button>
+            <button class="tab-btn" data-tab="security">🔒 Security</button>
+            <button class="tab-btn" data-tab="config">⚙ Config</button>
+            <button class="tab-btn" data-tab="experiments">🧪 Experiments</button>
+        </nav>
+
+        <!-- Right: Tab content panels -->
+        <main id="tab-content">
+            <!-- People tab -->
+            <div class="tab-panel active" id="panel-people">
+                <div class="panel-header">
+                    <h2>People</h2>
+                    <span class="panel-subtitle">Social registry — trust profiles and history</span>
+                </div>
+                <div class="panel-body">
+                    <div id="people-list-wrap">
+                        <table id="people-table">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Tier</th>
+                                    <th>Trust</th>
+                                    <th>Messages</th>
+                                    <th>Days</th>
+                                    <th>Platforms</th>
+                                </tr>
+                            </thead>
+                            <tbody id="people-body">
+                                <tr><td colspan="6" class="muted">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="person-detail" class="detail-panel" style="display:none">
+                        <button class="back-btn" id="person-back">&larr; Back</button>
+                        <div id="person-detail-content"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Memory tab -->
+            <div class="tab-panel" id="panel-memory">
+                <div class="panel-header">
+                    <h2>Memory</h2>
+                    <span class="panel-subtitle">Core memory — Ene's persistent knowledge</span>
+                </div>
+                <div class="panel-body">
+                    <div id="memory-budget" class="budget-bar-wrap"></div>
+                    <div id="memory-sections"></div>
+                </div>
+            </div>
+
+            <!-- Threads tab -->
+            <div class="tab-panel" id="panel-threads">
+                <div class="panel-header">
+                    <h2>Threads</h2>
+                    <span class="panel-subtitle">Conversation tracker — active thread state</span>
+                </div>
+                <div class="panel-body">
+                    <div id="threads-list"></div>
+                    <div id="thread-detail" class="detail-panel" style="display:none">
+                        <button class="back-btn" id="thread-back">&larr; Back</button>
+                        <div id="thread-detail-content"></div>
+                    </div>
+                    <div id="threads-pending-section">
+                        <h3>Pending (unassigned)</h3>
+                        <div id="pending-list"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sessions tab -->
+            <div class="tab-panel" id="panel-sessions">
+                <div class="panel-header">
+                    <h2>Sessions</h2>
+                    <span class="panel-subtitle">Active conversation sessions</span>
+                </div>
+                <div class="panel-body">
+                    <div id="sessions-list"></div>
+                    <div id="session-detail" class="detail-panel" style="display:none">
+                        <button class="back-btn" id="session-back">&larr; Back</button>
+                        <div id="session-detail-content"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Security tab -->
+            <div class="tab-panel" id="panel-security">
+                <div class="panel-header">
+                    <h2>Security</h2>
+                    <span class="panel-subtitle">Mutes, rate limits, jailbreak detection</span>
+                </div>
+                <div class="panel-body">
+                    <div class="security-section">
+                        <h3>Mute User</h3>
+                        <div class="inline-form">
+                            <input type="text" id="mute-caller-id" placeholder="caller_id (e.g. discord:12345)" class="ctrl-input">
+                            <input type="number" id="mute-duration" value="30" min="1" max="1440" class="ctrl-input ctrl-input-sm">
+                            <span class="input-hint">min</span>
+                            <button id="btn-mute" class="ctrl-btn ctrl-btn-danger">Mute</button>
+                        </div>
+                    </div>
+                    <div class="security-section">
+                        <h3>Muted Users</h3>
+                        <div id="muted-list"></div>
+                    </div>
+                    <div class="security-section">
+                        <h3>Rate Limits</h3>
+                        <div id="rate-limit-list"></div>
+                    </div>
+                    <div class="security-section">
+                        <h3>Jailbreak Scores</h3>
+                        <div id="jailbreak-list"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Config tab -->
+            <div class="tab-panel" id="panel-config">
+                <div class="panel-header">
+                    <h2>Config</h2>
+                    <span class="panel-subtitle">Current running configuration (read-only)</span>
+                </div>
+                <div class="panel-body">
+                    <div id="config-content"></div>
+                </div>
+            </div>
+
+            <!-- Experiments tab -->
+            <div class="tab-panel" id="panel-experiments">
+                <div class="panel-header">
+                    <h2>Experiments</h2>
+                    <span class="panel-subtitle">A/B tests and feature experiments</span>
+                </div>
+                <div class="panel-body">
+                    <div id="experiments-list"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/control.js"></script>
+</body>
+</html>

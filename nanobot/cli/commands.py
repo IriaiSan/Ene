@@ -272,12 +272,14 @@ def _make_provider(config):
         console.print("[red]Error: No API key configured.[/red]")
         console.print("Set one in ~/.nanobot/config.json under providers section")
         raise typer.Exit(1)
+    from nanobot.providers.litellm_provider import DEFAULT_FALLBACK_MODELS
     return LiteLLMProvider(
         api_key=p.api_key if p else None,
         api_base=config.get_api_base(),
         default_model=model,
         extra_headers=p.extra_headers if p else None,
         provider_name=config.get_provider_name(),
+        fallback_models=DEFAULT_FALLBACK_MODELS,
     )
 
 
@@ -863,6 +865,313 @@ def status():
             else:
                 has_key = bool(p.api_key)
                 console.print(f"{spec.label}: {'[green]✓[/green]' if has_key else '[dim]not set[/dim]'}")
+
+
+# ---------------------------------------------------------------------------
+# Lab commands — development lab for isolated testing
+# ---------------------------------------------------------------------------
+
+lab_app = typer.Typer(help="Development lab — isolated test environment")
+app.add_typer(lab_app, name="lab")
+
+lab_snapshot_app = typer.Typer(help="Manage named snapshots")
+lab_app.add_typer(lab_snapshot_app, name="snapshot")
+
+
+@lab_snapshot_app.command("create")
+def lab_snapshot_create(
+    name: str = typer.Argument(..., help="Snapshot name"),
+    source: str = typer.Option("live", "--from", help="Source: 'live' or 'run:<run_name>'"),
+):
+    """Create a named snapshot from live state or a lab run."""
+    from nanobot.lab.state import create_snapshot
+
+    try:
+        path = create_snapshot(name, source=source)
+        console.print(f"[green]Snapshot '{name}' created[/green] at {path}")
+    except (ValueError, FileNotFoundError) as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@lab_snapshot_app.command("list")
+def lab_snapshot_list():
+    """List all named snapshots."""
+    from nanobot.lab.state import list_snapshots
+
+    snaps = list_snapshots()
+    if not snaps:
+        console.print("[dim]No snapshots found[/dim]")
+        return
+
+    table = Table(title="Lab Snapshots")
+    table.add_column("Name", style="cyan")
+    table.add_column("Source")
+    table.add_column("Files", justify="right")
+    table.add_column("Size", justify="right")
+    table.add_column("Created")
+
+    for s in snaps:
+        table.add_row(
+            s.get("name", "?"),
+            s.get("source", "?"),
+            str(s.get("file_count", "?")),
+            f"{s.get('total_size_mb', 0):.1f} MB",
+            s.get("created_at", "?")[:19],
+        )
+
+    console.print(table)
+
+
+@lab_snapshot_app.command("delete")
+def lab_snapshot_delete(
+    name: str = typer.Argument(..., help="Snapshot name to delete"),
+):
+    """Delete a named snapshot."""
+    from nanobot.lab.state import delete_snapshot
+
+    try:
+        delete_snapshot(name)
+        console.print(f"[green]Snapshot '{name}' deleted[/green]")
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@lab_app.command("run")
+def lab_run(
+    script: Path = typer.Argument(..., help="JSONL script file"),
+    snapshot: str = typer.Option(None, "--snapshot", "-s", help="Restore from snapshot"),
+    name: str = typer.Option(None, "--name", "-n", help="Run name (default: auto-generated)"),
+    model: str = typer.Option(
+        "deepseek/deepseek-chat-v3-0324:free", "--model", "-m", help="LLM model"
+    ),
+    replay: bool = typer.Option(False, "--replay", help="Use cached LLM responses only"),
+    record: bool = typer.Option(False, "--record", help="Record LLM responses to cache"),
+    fresh: bool = typer.Option(False, "--fresh", help="Start with empty state (no snapshot)"),
+):
+    """Run a scripted test from a JSONL file."""
+    import json
+    import time
+
+    from nanobot.lab.harness import LabConfig, LabHarness
+    from nanobot.lab.audit import AuditCollector
+
+    if not script.exists():
+        console.print(f"[red]Script not found:[/red] {script}")
+        raise typer.Exit(1)
+
+    # Parse script
+    messages = []
+    with open(script, encoding="utf-8") as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                messages.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                console.print(f"[red]JSON error on line {line_num}:[/red] {e}")
+                raise typer.Exit(1)
+
+    # Determine cache mode
+    if replay:
+        cache_mode = "replay"
+    elif record:
+        cache_mode = "record"
+    else:
+        cache_mode = "replay_or_live"
+
+    # Auto-generate run name
+    run_name = name or f"run_{int(time.time())}"
+
+    config = LabConfig(
+        run_name=run_name,
+        snapshot_name=None if fresh else snapshot,
+        model=model,
+        cache_mode=cache_mode,
+        observatory_enabled=False,
+    )
+
+    async def _run():
+        lab = LabHarness(config=config)
+        try:
+            await lab.start()
+            console.print(f"[cyan]Lab '{run_name}' started[/cyan] (model={model}, cache={cache_mode})")
+            console.print(f"Running {len(messages)} messages...")
+
+            results = await lab.run_script(messages)
+
+            # Summary
+            responded = sum(1 for r in results if r.response is not None)
+            console.print(f"\n[green]Done![/green] {responded}/{len(results)} messages got responses")
+
+            # Provider stats
+            stats = lab.get_provider_stats()
+            if stats:
+                console.print(f"Cache: {stats['hits']} hits, {stats['misses']} misses, {stats['records']} recorded")
+
+            # Save audit
+            audit_path = lab.paths.audit_dir / "run.jsonl"
+            # (audit collector would be attached here in full integration)
+
+            console.print(f"Run data: {lab.paths.data_dir}")
+        finally:
+            await lab.stop()
+
+    asyncio.run(_run())
+
+
+@lab_app.command("list")
+def lab_list():
+    """List all lab runs."""
+    from nanobot.lab.state import list_runs
+
+    runs = list_runs()
+    if not runs:
+        console.print("[dim]No lab runs found[/dim]")
+        return
+
+    table = Table(title="Lab Runs")
+    table.add_column("Name", style="cyan")
+    table.add_column("Workspace", justify="center")
+    table.add_column("Sessions", justify="center")
+    table.add_column("Audit Files", justify="right")
+
+    for r in runs:
+        table.add_row(
+            r.get("name", "?"),
+            "✓" if r.get("has_workspace") else "✗",
+            "✓" if r.get("has_sessions") else "✗",
+            str(r.get("audit_files", 0)),
+        )
+
+    console.print(table)
+
+
+@lab_app.command("stress")
+def lab_stress(
+    users: int = typer.Option(10, "--users", "-u", help="Number of simulated users"),
+    messages: int = typer.Option(100, "--messages", "-m", help="Messages per user"),
+    snapshot: str = typer.Option(None, "--snapshot", "-s", help="Restore from snapshot"),
+    model: str = typer.Option(
+        "deepseek/deepseek-chat-v3-0324:free", "--model", help="LLM model"
+    ),
+):
+    """Run a stress test with multiple simulated users."""
+    import time
+
+    from nanobot.lab.harness import LabConfig, LabHarness
+    from nanobot.lab.stress import StressTest
+
+    script = StressTest.generate_multi_user(
+        user_count=users, messages_per_user=messages
+    )
+    run_name = f"stress_{int(time.time())}"
+
+    config = LabConfig(
+        run_name=run_name,
+        snapshot_name=snapshot,
+        model=model,
+        cache_mode="replay_or_live",
+        observatory_enabled=False,
+    )
+
+    async def _run():
+        lab = LabHarness(config=config)
+        try:
+            await lab.start()
+            console.print(f"[cyan]Stress test '{run_name}'[/cyan] — {users} users × {messages} msgs = {len(script)} total")
+
+            results = await lab.run_script(script)
+
+            responded = sum(1 for r in results if r.response is not None)
+            console.print(f"\n[green]Done![/green] {responded}/{len(results)} got responses")
+
+            stats = lab.get_provider_stats()
+            if stats:
+                console.print(f"Cache: {stats['hits']} hits, {stats['misses']} misses")
+
+            console.print(f"Run data: {lab.paths.data_dir}")
+        finally:
+            await lab.stop()
+
+    asyncio.run(_run())
+
+
+@lab_app.command("diff")
+def lab_diff(
+    run_a: str = typer.Argument(..., help="First run name"),
+    run_b: str = typer.Argument(..., help="Second run name"),
+):
+    """Compare two lab runs side-by-side."""
+    from nanobot.lab.diff import AuditDiff
+    from nanobot.lab.state import _runs_dir
+
+    path_a = _runs_dir() / run_a / "audit" / "run.jsonl"
+    path_b = _runs_dir() / run_b / "audit" / "run.jsonl"
+
+    for name, path in [("A", path_a), ("B", path_b)]:
+        if not path.exists():
+            console.print(f"[red]Audit file not found for run {name}:[/red] {path}")
+            raise typer.Exit(1)
+
+    result = AuditDiff.compare(path_a, path_b)
+    summary = result["summary"]
+
+    console.print(f"\n[bold]Diff: {run_a} vs {run_b}[/bold]")
+    console.print(f"Events: {summary['events_a']} → {summary['events_b']} (delta: {summary['event_delta']:+d})")
+    console.print(f"Classification changes: {summary['classification_changes_count']}")
+    console.print(f"Response changes: {summary['response_changes_count']}")
+
+    if result["classification_changes"]:
+        console.print("\n[yellow]Classification changes:[/yellow]")
+        for c in result["classification_changes"]:
+            console.print(f"  #{c['index']}: {c['a']} → {c['b']}")
+
+    if result["response_diffs"]:
+        console.print("\n[yellow]Response diffs:[/yellow]")
+        for d in result["response_diffs"][:10]:  # Show first 10
+            console.print(f"  #{d['index']}:")
+            console.print(f"    A: {d['a'][:100]}")
+            console.print(f"    B: {d['b'][:100]}")
+
+
+@lab_app.command("audit")
+def lab_audit(
+    run_name: str = typer.Argument(..., help="Run name"),
+):
+    """View audit summary for a lab run."""
+    import json
+
+    from nanobot.lab.audit import AuditCollector
+    from nanobot.lab.state import _runs_dir
+
+    audit_path = _runs_dir() / run_name / "audit" / "run.jsonl"
+    if not audit_path.exists():
+        console.print(f"[red]Audit file not found:[/red] {audit_path}")
+        raise typer.Exit(1)
+
+    events = AuditCollector.load(audit_path)
+
+    # Build summary manually
+    type_counts: dict[str, int] = {}
+    for e in events:
+        t = e.get("type", "unknown")
+        type_counts[t] = type_counts.get(t, 0) + 1
+
+    console.print(f"\n[bold]Audit: {run_name}[/bold]")
+    console.print(f"Total events: {len(events)}")
+
+    if type_counts:
+        table = Table(title="Event Types")
+        table.add_column("Type", style="cyan")
+        table.add_column("Count", justify="right")
+
+        for t, count in sorted(type_counts.items(), key=lambda x: -x[1]):
+            table.add_row(t, str(count))
+
+        console.print(table)
 
 
 if __name__ == "__main__":

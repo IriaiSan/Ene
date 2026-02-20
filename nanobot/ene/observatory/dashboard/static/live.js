@@ -38,7 +38,18 @@ const TYPE_CLASS = {
     response_sent:  'evt-output',
     mute_event:     'evt-error',
     error:          'evt-error',
+    queue_merge:    'evt-system',
+    queue_merge_drop: 'evt-error',
+    brain_paused:   'evt-system',
+    brain_status_changed: 'evt-system',
 };
+
+// Module events (mod_*) get the module class
+function getEvtClass(type) {
+    if (TYPE_CLASS[type]) return TYPE_CLASS[type];
+    if (type.startsWith('mod_')) return 'evt-module';
+    return 'evt-system';
+}
 
 const TYPE_LABEL = {
     hard_reset:     'RESET',
@@ -59,6 +70,8 @@ const TYPE_LABEL = {
     response_sent:  'SENT',
     mute_event:     'MUTED',
     error:          'ERROR',
+    brain_paused:   '🧠 PAUSED',
+    brain_status_changed: '🧠 BRAIN',
 };
 
 // ── Render helpers ────────────────────────────────
@@ -165,6 +178,14 @@ function renderBody(evt) {
         case 'error':
             return `<b>${esc(evt.stage)}</b>: ${esc(evt.error_message)}`;
 
+        case 'brain_paused':
+            return `<b>${esc(evt.sender)}</b>: "${esc(evt.content_preview)}" <span style="color:var(--yellow)">(brain OFF — message observed, not processed)</span>`;
+
+        case 'brain_status_changed':
+            return evt.status === 'resumed'
+                ? '<b style="color:var(--green)">Brain resumed</b> — LLM responses active'
+                : '<b style="color:var(--red)">Brain paused</b> — messages observed, no LLM calls';
+
         default:
             return JSON.stringify(evt);
     }
@@ -202,8 +223,8 @@ function addEvent(evt) {
     }
 
     const el = document.createElement('div');
-    const cssClass = TYPE_CLASS[evt.type] || 'evt-system';
-    const label = TYPE_LABEL[evt.type] || evt.type.toUpperCase();
+    const cssClass = getEvtClass(evt.type);
+    const label = TYPE_LABEL[evt.type] || evt.type.replace(/^mod_/, '').toUpperCase();
     el.className = `evt ${cssClass}`;
     el.innerHTML = `
         <span class="evt-ts">${esc(evt.ts)}</span>
@@ -285,6 +306,18 @@ function updateStatePanel(state) {
 
     // Muted
     document.getElementById('st-muted').textContent = state.muted_count || 0;
+
+    // Brain indicator (in header)
+    const brainEl = document.getElementById('brain-indicator');
+    if (brainEl && state.brain_enabled !== undefined) {
+        if (state.brain_enabled) {
+            brainEl.textContent = '🧠 ON';
+            brainEl.className = 'badge connected';
+        } else {
+            brainEl.textContent = '🧠 OFF';
+            brainEl.className = 'badge disconnected';
+        }
+    }
 
     // Active batch
     const batchEl = document.getElementById('active-batch');
@@ -549,8 +582,82 @@ promptLogBody.addEventListener('scroll', () => {
     }
 });
 
+// ── Module Health Panel ───────────────────────────
+
+async function pollModuleHealth() {
+    try {
+        const res = await fetch(API + '/api/live/modules?hours=1');
+        if (!res.ok) return;
+        const data = await res.json();
+        renderModuleHealth(data);
+    } catch (e) { /* silent */ }
+}
+
+function renderModuleHealth(data) {
+    const el = document.getElementById('module-health');
+    if (!el) return;
+
+    const lines = [];
+
+    // Tracker
+    const t = data.tracker || {};
+    if (t.threads_created !== undefined) {
+        lines.push(`<div class="mh-row"><span class="mh-label">tracker</span> ${t.threads_created} threads | ${t.total_assignments} assigned | avg ${(t.avg_messages_per_thread || 0).toFixed(1)} msg/thread</div>`);
+    }
+
+    // Signals
+    const s = data.signals || {};
+    if (s.total > 0) {
+        const d = s.distribution || {};
+        const r = d.RESPOND || 0, c = d.CONTEXT || 0, dr = d.DROP || 0;
+        const total = s.total;
+        lines.push(`<div class="mh-row"><span class="mh-label">signals</span> ${pct(r,total)}% R | ${pct(c,total)}% C | ${pct(dr,total)}% D (${total} total)</div>`);
+    }
+
+    // Daemon
+    const dm = data.daemon || {};
+    if (dm.total_events > 0) {
+        const bt = dm.by_type || {};
+        const ok = (bt.classified || {}).count || 0;
+        const to = (bt.timeout || {}).count || 0;
+        const rot = (bt.model_rotation || {}).count || 0;
+        lines.push(`<div class="mh-row"><span class="mh-label">daemon</span> ${ok} ok | ${to} timeout | ${rot} rotations</div>`);
+    }
+
+    // Cleaning
+    const cl = data.cleaning || {};
+    if (cl.total_events > 0) {
+        const bt = cl.by_type || {};
+        const cleaned = (bt.cleaned || {}).count || 0;
+        lines.push(`<div class="mh-row"><span class="mh-label">cleaning</span> ${cleaned} cleaned</div>`);
+    }
+
+    // Memory
+    const m = data.memory || {};
+    if (m.total_events > 0) {
+        const bt = m.by_type || {};
+        const facts = (bt.facts_extracted || {}).count || 0;
+        const refl = (bt.reflection_generated || {}).count || 0;
+        lines.push(`<div class="mh-row"><span class="mh-label">memory</span> ${facts} extractions | ${refl} reflections</div>`);
+    }
+
+    // Prompts
+    const p = data.prompts || {};
+    if (p.version) {
+        lines.push(`<div class="mh-row"><span class="mh-label">prompts</span> v${esc(p.version)}</div>`);
+    }
+
+    el.innerHTML = lines.length ? lines.join('') : '<span class="muted">No module data yet</span>';
+}
+
+function pct(n, total) {
+    return total > 0 ? Math.round(n / total * 100) : 0;
+}
+
 // ── Init ──────────────────────────────────────────
 
 connectSSE();
 connectPromptSSE();
 setInterval(pollState, 3000);
+pollModuleHealth();
+setInterval(pollModuleHealth, 10000);

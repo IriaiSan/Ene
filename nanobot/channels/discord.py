@@ -40,10 +40,13 @@ class DiscordChannel(BaseChannel):
         self.config: DiscordConfig = config
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._seq: int | None = None
+        self._session_id: str | None = None  # For RESUME
+        self._resume_url: str | None = None  # Gateway URL for resume
         self._heartbeat_task: asyncio.Task | None = None
         self._typing_tasks: dict[str, asyncio.Task] = {}
         self._http: httpx.AsyncClient | None = None
         self._bot_user_id: str | None = None  # Ene: own Discord user ID (for @mention detection)
+        self._consecutive_failures: int = 0  # For exponential backoff
 
     async def start(self) -> None:
         """Start the Discord gateway connection."""
@@ -56,17 +59,26 @@ class DiscordChannel(BaseChannel):
 
         while self._running:
             try:
-                logger.info("Connecting to Discord gateway...")
-                async with websockets.connect(self.config.gateway_url) as ws:
+                # Use resume URL if available, otherwise default gateway
+                url = self._resume_url or self.config.gateway_url
+                logger.info(f"Connecting to Discord gateway...")
+                async with websockets.connect(url) as ws:
                     self._ws = ws
+                    self._consecutive_failures = 0  # Reset on successful connect
                     await self._gateway_loop()
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                self._consecutive_failures += 1
+                # Exponential backoff: 5s, 10s, 20s, 40s, 60s max
+                delay = min(5 * (2 ** (self._consecutive_failures - 1)), 60)
                 logger.warning(f"Discord gateway error: {e}")
                 if self._running:
-                    logger.info("Reconnecting to Discord gateway in 5 seconds...")
-                    await asyncio.sleep(5)
+                    logger.info(
+                        f"Reconnecting in {delay}s "
+                        f"(attempt {self._consecutive_failures})..."
+                    )
+                    await asyncio.sleep(delay)
 
     async def stop(self) -> None:
         """Stop the Discord channel."""
@@ -144,24 +156,39 @@ class DiscordChannel(BaseChannel):
                 logger.debug(f"Discord gateway event: op={op} t={event_type} seq={seq}")
 
             if op == 10:
-                # HELLO: start heartbeat and identify
+                # HELLO: start heartbeat, then identify or resume
                 interval_ms = payload.get("heartbeat_interval", 45000)
                 await self._start_heartbeat(interval_ms / 1000)
-                await self._identify()
+                if self._session_id and self._seq is not None:
+                    await self._resume()
+                else:
+                    await self._identify()
             elif op == 0 and event_type == "READY":
-                # Ene: capture own user ID for @mention detection
+                # Capture session info for RESUME on reconnect
+                self._session_id = payload.get("session_id")
+                self._resume_url = payload.get("resume_gateway_url")
                 self._bot_user_id = payload.get("user", {}).get("id")
                 logger.info(f"Discord gateway READY (bot user ID: {self._bot_user_id})")
+            elif op == 0 and event_type == "RESUMED":
+                logger.info("Discord gateway RESUMED successfully")
             elif op == 0 and event_type == "MESSAGE_CREATE":
                 logger.debug(f"Discord MESSAGE_CREATE from {payload.get('author', {}).get('username', '?')} in channel {payload.get('channel_id', '?')}")
                 await self._handle_message_create(payload)
             elif op == 7:
-                # RECONNECT: exit loop to reconnect
+                # RECONNECT: exit loop to reconnect (keep session for RESUME)
                 logger.info("Discord gateway requested reconnect")
                 break
             elif op == 9:
-                # INVALID_SESSION: reconnect
-                logger.warning("Discord gateway invalid session")
+                # INVALID_SESSION: d=True means resumable, d=False means not
+                resumable = payload if isinstance(payload, bool) else False
+                if not resumable:
+                    # Session is dead — clear it so next connect does fresh IDENTIFY
+                    logger.warning("Discord gateway invalid session (not resumable)")
+                    self._session_id = None
+                    self._resume_url = None
+                    self._seq = None
+                else:
+                    logger.info("Discord gateway invalid session (resumable)")
                 break
             elif op == 11:
                 # HEARTBEAT_ACK — normal, just track it
@@ -193,6 +220,22 @@ class DiscordChannel(BaseChannel):
         }
         logger.info(f"Discord IDENTIFY sent with intents={self.config.intents} (binary: {bin(self.config.intents)})")
         await self._ws.send(json.dumps(identify))
+
+    async def _resume(self) -> None:
+        """Send RESUME payload to reconnect without losing events."""
+        if not self._ws:
+            return
+
+        resume = {
+            "op": 6,
+            "d": {
+                "token": self.config.token,
+                "session_id": self._session_id,
+                "seq": self._seq,
+            },
+        }
+        logger.info(f"Discord RESUME sent (session={self._session_id}, seq={self._seq})")
+        await self._ws.send(json.dumps(resume))
 
     async def _start_heartbeat(self, interval_s: float) -> None:
         """Start or restart the heartbeat loop."""

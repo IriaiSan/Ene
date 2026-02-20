@@ -91,6 +91,9 @@ docs/                       Architecture, memory, social, capabilities, research
 | `docs/RESEARCH.md` | Academic papers, industry analysis, context engineering best practices, future ideas. |
 | `docs/ENE_COMPLETE_REFERENCE.md` | Full project reference — vision, philosophy, history, endgame architecture, roadmap, and all TODOs. |
 | `docs/CHANGELOG.md` | Chronological record of every change since fork. |
+| `docs/TESTING.md` | Complete testing guide, lab usage, test writing patterns, state verification. |
+| `docs/DEVELOPMENT.md` | How to add features, fix bugs, non-regression checklist, lab workflow. **Read before making any change.** |
+| `docs/LAB_RESEARCH.md` | Research notes on eval methodologies (Anthropic, tau-bench, Letta, etc.) |
 
 ## Social module
 
@@ -154,11 +157,12 @@ Live dashboard at `localhost:18791/live` with real-time SSE stream.
 ```
 Discord WS → channel adapter → bus
 → rate limit check (10 msgs/30s, Dad exempt)
-→ debounce buffer (2s sliding window, 10 msg batch limit, 20 msg hard cap)
+→ debounce buffer (3.5s sliding window, 15 msg batch limit, 40 msg hard cap)
+→ queue merge (if backlogged batches exist, collapse into one mega-batch, cap 30 msgs)
 → per-message: daemon (free LLM, 5s) → math classifier fallback → hard override (ene mention/reply)
 → classify: RESPOND / CONTEXT / DROP (muted → drop, Dad-alone → promote to RESPOND)
 → conversation tracker: ingest_batch() → build_context() (thread-aware formatting)
-→ agent loop → LLM (DeepSeek v3.2 via OpenRouter)
+→ agent loop → LLM (DeepSeek v3.2 via OpenRouter, 45s timeout, fallback rotation)
 → tool execution loop (restricted tools Dad-only, message tool terminates loop)
 → clean_response() (strip reflection, XML, paths, IDs, enforce length)
 → Discord REST (reply threading via message_reference)
@@ -174,6 +178,9 @@ Key behaviors:
 - Latency warning: after 18s with no response, sends canned "having some lag" message
 - Stale message tagging: messages >5 min old in queue get `_is_stale` metadata flag
 - Auto-session rotation: at 80% of 60K token budget, auto-rotates with summary injection
+- Model fallback: 45s timeout per LLM call, retry once with next model (DeepSeek → Qwen 3 → Gemini Flash). Recovery probe after 5 min cooldown snaps back to primary on success.
+- Diary consolidation: routed to separate model (Gemini 3 Flash) via `consolidationModel` config to prevent pattern-lock from main model seeing its own diary output
+- Queue merge: if batches pile up while LLM is processing, merge them into one mega-batch (cap 30)
 
 ## Common bugs and fixes applied
 
@@ -185,6 +192,9 @@ Key behaviors:
 | Ghost "I remember" in history | Fake assistant message in `get_hybrid_history` | `session.py` — removed |
 | Session crashes on non-ASCII | `open()` without `encoding="utf-8"` on Windows | `session.py` all file opens |
 | Daemon prompt leaks Dad ID | Hardcoded ID string in `DAEMON_PROMPT` | `processor.py` — removed |
+| LLM parrots `[responded via message tool]` | Session stored opaque marker as assistant content; LLM pattern-locked | `loop.py` — `_last_message_content` captures real content |
+| `<message>` tags leak to Discord | DeepSeek wraps output in `<message>` XML spontaneously | `response_cleaning.py` — extract/strip |
+| Garbled XML reaches Discord | Loop only checked `<function_calls>`, DeepSeek outputs `<functioninvoke` | `loop.py` + `response_cleaning.py` + `tracker.py` — broadened regex |
 
 ## Modular architecture — why it's built this way
 
@@ -234,7 +244,7 @@ Current sections: Language & Runtime (L), Code Structure (S), Architecture & Mod
 
 Key invariants from the whitelist worth memorizing:
 - **A3**: Core systems are locked — only Dad/Claude Code can modify intake, loop, security, session
-- **A5**: Tracker owns message content, session stores markers only
+- **A5**: Tracker owns thread context, session stores condensed content + real assistant responses
 - **X1**: DAD_IDS hardcoded, never from config/env
 - **X2**: `clean_response()` is the only output path
 - **C5**: `message` tool terminates the agent loop
@@ -243,8 +253,9 @@ Key invariants from the whitelist worth memorizing:
 
 | Issue | Description | Status |
 |-------|-------------|--------|
-| Duplicate responses | Ene sometimes sends the same response twice via both message tool AND direct return | Active bug — main priority |
 | DeepSeek pattern lock | v3.2 locks into formatting patterns after long sessions | Mitigated by re-anchoring (every 6 turns) |
+| DeepSeek garbled XML | v3.2 outputs `<functioninvoke>` as raw text instead of tool calls | Mitigated by multi-layer stripping in clean_response + loop + tracker |
+| DeepSeek `<message>` tags | v3.2 spontaneously wraps output in `<message>` XML | Mitigated by stripping in clean_response |
 | Watchdog disabled | Module 4 disabled to save costs — free model rotation not battle-tested | Intentional |
 | Web search disabled | Brave API key not configured | Needs key |
 
@@ -256,13 +267,37 @@ python -m pytest tests/ -x -q           # Run all tests (must pass before commit
 python -m pytest tests/ene/ -x -q       # Ene module tests only
 python -m pytest tests/ene/memory/ -q   # Memory module tests
 python -m pytest tests/ene/social/ -q   # Social module tests
+python -m pytest tests/lab/ -q          # Lab infrastructure tests
+python -m pytest tests/channels/ -q     # Channel tests (mock)
+python -m pytest tests/providers/ -q    # Provider tests (record/replay)
 ```
 
 - All new code must have tests (WHITELIST T1)
 - Tests mirror source structure in `tests/` (WHITELIST T2)
 - pytest only — no unittest, no nose (WHITELIST T3)
 - Mock external APIs in tests — tests must work offline (WHITELIST T4)
-- ~725 tests currently passing
+- All tests must pass before commit (WHITELIST T5)
+- ~1020 tests currently passing
+- **Full testing guide:** `docs/TESTING.md`
+- **Development workflow:** `docs/DEVELOPMENT.md`
+
+## Development Lab
+
+Isolated test environment for testing Ene without touching live state.
+Same AgentLoop code, different seams (paths, provider, channel).
+
+```bash
+nanobot lab snapshot create my_snap --from live    # Snapshot live state
+nanobot lab run script.jsonl --snapshot my_snap    # Run scripted test
+nanobot lab stress --users 10 --messages 100       # Stress test
+nanobot lab diff run_a run_b                       # Compare two runs
+```
+
+- MockChannel for programmatic message injection
+- RecordReplayProvider for $0 cached LLM responses
+- Full state isolation (separate workspace, sessions, DBs)
+- Audit trail captures every tracer event
+- **Full lab guide:** `docs/TESTING.md` (Development Lab section)
 
 ## Running
 
@@ -299,3 +334,19 @@ Changes to these files take effect immediately (loaded fresh each message).
 - Architecture decisions must be documented in WHITELIST.md
 - Changes to core systems require explicit approval
 - Background: software engineer, builds AI systems, thinks in systems not features
+
+## Coding patterns (MUST READ)
+
+Before writing any code, read `docs/CODING_PATTERNS.md`. It has copy-paste templates for every common task (new tools, modules, tests, metrics). Patterns are adopted from upstream nanobot and extended for Ene's module system. The critical rules:
+
+1. **Match upstream**: This is a nanobot fork. Upstream files (tools, bus, session, channels) set the baseline. Don't add `from __future__` or `TYPE_CHECKING` to upstream-origin files.
+2. **Import order**: stdlib → typing → loguru → project. Ene modules add `from __future__ import annotations` + `if TYPE_CHECKING:` block for circular import avoidance.
+3. **Tools return strings, never raise**: `async def execute(**kwargs) -> str:` returns `"Error: ..."` on failure
+4. **Modules late-bind**: Heavy imports inside `initialize()`, not at top of file
+5. **Docstrings**: Google-style. Interfaces/ABCs get `Args:`/`Returns:` sections. Implementations get one-liners.
+6. **Logging**: loguru only, module prefix in messages (`"Memory: ..."`), `debug` for hot paths, `info` for lifecycle
+7. **Error handling**: Tools return strings. Infrastructure raises. Module hooks log + continue. Never `except: pass`.
+8. **Tests**: `tmp_path` for isolation, `FakeProvider` for LLM, bare `assert`, `pytest.raises` for exceptions
+9. **Paths**: `pathlib.Path`, never `os.path`. Always `encoding="utf-8"` on `open()` (Windows).
+10. **No silent failures**: Never bare `except:`. Always `except Exception:` with a log message.
+11. **Match existing code**: When in doubt, find the closest existing file and copy its patterns exactly.

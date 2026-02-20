@@ -46,6 +46,7 @@ from nanobot.agent.security import (
     MuteUserTool,
 )
 from nanobot.agent.response_cleaning import clean_response, condense_for_session
+from nanobot.agent.prompts.loader import PromptLoader
 from nanobot.agent.message_merging import (
     format_author,
     classify_message,
@@ -140,18 +141,23 @@ class AgentLoop:
         self._live = LiveTracer()  # Ene: real-time event tracer for live dashboard
 
         # Ene: message debounce + queue — batch messages, process sequentially
-        self._debounce_window = 2.0  # seconds quiet before flushing batch to queue
-        self._debounce_batch_limit = 10  # force-flush when batch reaches this size
+        self._debounce_window = 3.5  # seconds quiet before flushing batch to queue (was 2.0)
+        self._debounce_batch_limit = 15  # force-flush when batch reaches this size (was 10)
         self._debounce_buffers: dict[str, list[InboundMessage]] = {}  # channel_key -> intake buffer
         self._debounce_timers: dict[str, asyncio.Task] = {}  # channel_key -> timer task
-        self._debounce_max_buffer = 20  # hard cap on intake buffer (drops oldest)
+        self._debounce_max_buffer = 40  # hard cap on intake buffer, drops oldest (was 20)
         self._channel_queues: dict[str, list[list[InboundMessage]]] = {}  # channel_key -> [batches]
         self._queue_processors: dict[str, asyncio.Task] = {}  # channel_key -> processor task
+        self._queue_merge_cap = 30  # max messages in a merged batch (keeps newest, drops oldest)
 
         # Ene: per-user rate limiting — prevents spam attacks
         self._user_message_timestamps: dict[str, list[float]] = {}  # user_id -> [timestamps]
         self._rate_limit_window = 30.0  # seconds
         self._rate_limit_max = 10  # max messages per window for non-Dad users
+
+        # Ene: brain toggle — decouple Discord/dashboard from LLM response generation
+        # When OFF: Discord stays connected, dashboard works, messages are observed, but no LLM calls fire
+        self._brain_enabled: bool = True
 
         # Ene: mute system — temporarily ignore persistent spammers/jailbreakers
         self._muted_users: dict[str, float] = {}  # caller_id -> mute_expires_at (unix timestamp)
@@ -162,6 +168,10 @@ class AgentLoop:
 
         self._observatory_module = None  # Set in _register_ene_modules if available
         self._current_inbound_msg = None  # Ene: current message being processed (for message tool cleaning)
+        self._last_message_content: str | None = None  # Ene: actual content sent via message tool (for session storage)
+        self._module_metrics: dict = {}  # Ene: ModuleMetrics instances keyed by module name
+        self._batch_counter = 0  # Ene: monotonic batch counter for trace_id generation
+        self._prompts = PromptLoader()  # Ene: centralized prompt loader for version tracking
         self._register_default_tools()
         self._register_ene_modules()
 
@@ -209,6 +219,11 @@ class AgentLoop:
                 cleaned = self._ene_clean_response(outbound.content, self._current_inbound_msg)
                 if cleaned:
                     outbound.content = cleaned
+                    self._last_message_content = cleaned  # Capture for session storage
+                    # Inject Ene's response into thread for full conversation tracking
+                    _conv = self.module_registry.get_module("conversation_tracker")
+                    if _conv and hasattr(_conv, "tracker") and _conv.tracker:
+                        _conv.tracker.add_ene_response(self._current_inbound_msg, cleaned)
                     await self.bus.publish_outbound(outbound)
                 else:
                     logger.debug("Message tool output cleaned to empty, not sending")
@@ -331,6 +346,51 @@ class AgentLoop:
             if hasattr(obs_mod, "set_reset_callback"):
                 obs_mod.set_reset_callback(self.hard_reset)
                 logger.debug("Wired hard_reset → observatory")
+
+            # Wire AgentLoop → ControlAPI for the control panel
+            if hasattr(obs_mod, "set_control_api_loop"):
+                obs_mod.set_control_api_loop(self)
+                logger.debug("Wired AgentLoop → ControlAPI")
+
+            # Wire ModuleMetrics instances to modules for per-module observability
+            store = getattr(obs_mod, "store", None)
+            if store:
+                from nanobot.ene.observatory.module_metrics import ModuleMetrics
+
+                # Signals (classification scoring)
+                from nanobot.ene.conversation import signals as signals_mod
+                signals_metrics = ModuleMetrics("signals", store, self._live)
+                signals_mod.set_metrics(signals_metrics)
+
+                # Conversation tracker (thread lifecycle)
+                from nanobot.ene.conversation import tracker as tracker_mod
+                tracker_metrics = ModuleMetrics("tracker", store, self._live)
+                tracker_mod.set_metrics(tracker_metrics)
+
+                # Daemon (pre-classification)
+                from nanobot.ene.daemon import processor as daemon_proc_mod
+                daemon_metrics = ModuleMetrics("daemon", store, self._live)
+                daemon_proc_mod.set_metrics(daemon_metrics)
+
+                # Response cleaning
+                from nanobot.agent import response_cleaning as cleaning_mod
+                cleaning_metrics = ModuleMetrics("cleaning", store, self._live)
+                cleaning_mod.set_metrics(cleaning_metrics)
+
+                # Memory / sleep agent
+                from nanobot.ene.memory import sleep_agent as sleep_agent_mod
+                memory_metrics = ModuleMetrics("memory", store, self._live)
+                sleep_agent_mod.set_metrics(memory_metrics)
+
+                # Store references for trace_id propagation
+                self._module_metrics = {
+                    "signals": signals_metrics,
+                    "tracker": tracker_metrics,
+                    "daemon": daemon_metrics,
+                    "cleaning": cleaning_metrics,
+                    "memory": memory_metrics,
+                }
+                logger.debug("Wired ModuleMetrics → signals, tracker, daemon, cleaning, memory")
 
         # Register module tools with the ToolRegistry
         for tool in self.module_registry.get_all_tools():
@@ -511,8 +571,20 @@ class AgentLoop:
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info(f"Tool call: {tool_call.name}({args_str[:200]})")
 
+                    # Ene: pre-execution guard — block duplicate message tool calls.
+                    # The post-execution guard (lines below) catches duplicates too late —
+                    # both messages are already sent to Discord by that point.
+                    if tool_call.name == "message" and message_sent:
+                        logger.warning("Agent loop: blocked duplicate message tool (pre-execution guard)")
+                        self._live.emit(
+                            "loop_break", "",
+                            reason="duplicate_message_blocked",
+                            iterations=iteration,
+                            tools_used=tools_used,
+                        )
+                        result = "Error: message already sent this batch, cannot send another."
                     # Ene: restrict dangerous tools to Dad only
-                    if tool_call.name in RESTRICTED_TOOLS and self._current_caller_id not in DAD_IDS:
+                    elif tool_call.name in RESTRICTED_TOOLS and self._current_caller_id not in DAD_IDS:
                         result = "Access denied."
                         logger.warning(f"Blocked restricted tool '{tool_call.name}' for caller {self._current_caller_id}")
                     else:
@@ -590,9 +662,12 @@ class AgentLoop:
                 if message_sent:
                     final_content = None
                 # Ene: if LLM output looks like raw tool call XML, suppress it.
-                # DeepSeek sometimes outputs <function_calls> as plain text
+                # DeepSeek sometimes outputs garbled XML as plain text
                 # instead of structured tool calls — must not reach Discord.
-                elif final_content and '<function_calls>' in final_content:
+                # Catches: <function_calls>, <functioninvoke, <invoke, <parameter
+                elif final_content and re.search(
+                    r'<\s*(?:function|invoke|parameter)', final_content, re.IGNORECASE
+                ):
                     logger.warning("Agent loop: raw tool call XML in text response, suppressing")
                     final_content = None
 
@@ -641,6 +716,12 @@ class AgentLoop:
         """
         if not messages:
             return
+
+        # Ene: generate trace_id — links all module events across the pipeline for this batch
+        self._batch_counter += 1
+        trace_id = f"{int(_time.time())}_{channel_key}_{self._batch_counter}"
+        for metrics in self._module_metrics.values():
+            metrics.set_trace_id(trace_id)
 
         # Ene: stale message detection — tag messages that sat in queue too long
         from datetime import datetime, timedelta
@@ -816,13 +897,34 @@ class AgentLoop:
                         )
                         respond_msgs.append(m)
                     elif daemon_result.classification.value == "respond":
-                        self._live.emit(
-                            "classification", channel_key,
-                            sender=m.metadata.get("author_name", m.sender_id),
-                            result="respond",
-                            source="daemon",
-                        )
-                        respond_msgs.append(m)
+                        # Phase 4: Staleness downgrade — stale messages from non-Dad
+                        # with low daemon confidence get demoted to CONTEXT. Direct
+                        # @mentions/replies already went through the hard override above.
+                        if (
+                            m.metadata.get("_is_stale")
+                            and not is_dad
+                            and daemon_result.confidence < 0.85
+                        ):
+                            logger.debug(
+                                f"Staleness downgrade: {m.metadata.get('author_name', m.sender_id)} "
+                                f"RESPOND → CONTEXT (stale + confidence {daemon_result.confidence:.2f})"
+                            )
+                            self._live.emit(
+                                "classification", channel_key,
+                                sender=m.metadata.get("author_name", m.sender_id),
+                                result="context",
+                                source="daemon",
+                                override=f"stale_downgrade (confidence={daemon_result.confidence:.2f})",
+                            )
+                            context_msgs.append(m)
+                        else:
+                            self._live.emit(
+                                "classification", channel_key,
+                                sender=m.metadata.get("author_name", m.sender_id),
+                                result="respond",
+                                source="daemon",
+                            )
+                            respond_msgs.append(m)
                     elif daemon_result.classification.value == "drop" and not is_dad:
                         self._live.emit(
                             "classification", channel_key,
@@ -903,6 +1005,11 @@ class AgentLoop:
                     respond_msgs, context_msgs, channel_key,
                     format_author_fn=self._format_author,
                 )
+                # Scene Brief: extract batch participant IDs for multi-person awareness
+                participant_ids = _conv_mod.tracker.get_batch_participant_ids(
+                    respond_msgs, context_msgs, channel_key,
+                )
+                self.module_registry.set_scene_participants(participant_ids)
             except Exception as e:
                 logger.error(f"Conversation tracker failed, falling back to flat merge: {e}")
                 merged = self._merge_messages_tiered(respond_msgs, context_msgs)
@@ -934,16 +1041,115 @@ class AgentLoop:
         # Check if suspicious actions during merge should trigger auto-mute
         self._check_auto_mute(merged)
 
+        # ── Per-thread response loop (Phase 2.3) ─────────────────────
+        # If the conversation tracker identified multiple respond threads,
+        # process each one with its own focused context + LLM call.
+        # Single-thread or no-tracker batches use the existing path.
+        respond_threads = []
+        if _conv_mod and hasattr(_conv_mod, "tracker") and _conv_mod.tracker:
+            respond_threads = _conv_mod.tracker.get_respond_threads(channel_key)
+
         try:
-            response = await self._process_message(merged)
-            if response:
-                # Ene: live trace — response sent
-                self._live.emit(
-                    "response_sent", channel_key,
-                    content_preview=response.content[:120] if response.content else "",
-                    reply_to=response.reply_to,
-                )
-                await self.bus.publish_outbound(response)
+            if len(respond_threads) > 1:
+                # ── Multi-thread path: one LLM call per thread ──
+                from nanobot.ene.conversation.formatter import build_single_thread_context
+
+                THREAD_CAP = 3  # Max threads per batch cycle (Phase 4)
+                threads_to_process = respond_threads[:THREAD_CAP]
+
+                for thread in threads_to_process:
+                    try:
+                        # Build focused context for this thread
+                        thread_content, thread_msg_id_map, primary_name = (
+                            build_single_thread_context(
+                                focus_thread=thread,
+                                all_threads=_conv_mod.tracker._threads,
+                                pending=_conv_mod.tracker._pending,
+                                channel_key=channel_key,
+                            )
+                        )
+
+                        if not thread_content.strip():
+                            continue
+
+                        # Set focus target for this thread's LLM call
+                        topic = " ".join(thread.topic_keywords[:3]) if thread.topic_keywords else None
+                        _conv_mod.set_focus_target(primary_name or "someone", topic)
+
+                        # Build a focused InboundMessage for this thread
+                        trigger_msg = merged  # Reuse merged as base
+                        # Find the best trigger message from this thread's new messages
+                        new_msgs = thread.messages[thread.last_shown_index:]
+                        thread_sender_id = merged.sender_id
+                        thread_metadata = {**merged.metadata}
+                        if new_msgs:
+                            # Use the most recent non-Ene sender from the thread
+                            for tm in reversed(new_msgs):
+                                if not tm.is_ene:
+                                    # Extract platform sender ID
+                                    parts = tm.author_id.split(":", 1)
+                                    if len(parts) == 2:
+                                        thread_sender_id = parts[1]
+                                    thread_metadata["author_name"] = tm.author_name
+                                    thread_metadata["username"] = tm.author_username
+                                    break
+
+                        thread_metadata["msg_id_map"] = thread_msg_id_map
+                        thread_metadata["thread_count"] = 1
+                        thread_metadata["debounce_count"] = len(new_msgs)
+                        thread_metadata["message_ids"] = [
+                            tm.discord_msg_id for tm in new_msgs if tm.discord_msg_id
+                        ]
+
+                        focused_msg = InboundMessage(
+                            channel=merged.channel,
+                            sender_id=thread_sender_id,
+                            chat_id=merged.chat_id,
+                            content=thread_content,
+                            timestamp=merged.timestamp,
+                            metadata=thread_metadata,
+                        )
+
+                        response = await self._process_message(focused_msg)
+                        if response:
+                            self._live.emit(
+                                "response_sent", channel_key,
+                                content_preview=response.content[:120] if response.content else "",
+                                reply_to=response.reply_to,
+                                thread_id=thread.thread_id[:8],
+                            )
+                            await self.bus.publish_outbound(response)
+
+                        # Mark thread as responded + update last_shown_index
+                        _conv_mod.tracker.mark_thread_responded(thread.thread_id)
+                        thread.last_shown_index = len(thread.messages)
+
+                    except Exception as e:
+                        logger.error(
+                            f"Error processing thread {thread.thread_id[:8]}: {e}",
+                            exc_info=True,
+                        )
+                    finally:
+                        _conv_mod.clear_focus_target()
+
+                if len(respond_threads) > THREAD_CAP:
+                    deferred = len(respond_threads) - THREAD_CAP
+                    logger.info(
+                        f"Per-thread loop: processed {THREAD_CAP} threads, "
+                        f"deferred {deferred} to next batch cycle"
+                    )
+
+            else:
+                # ── Single-thread path: existing behavior ──
+                response = await self._process_message(merged)
+                if response:
+                    self._live.emit(
+                        "response_sent", channel_key,
+                        content_preview=response.content[:120] if response.content else "",
+                        reply_to=response.reply_to,
+                    )
+                    await self.bus.publish_outbound(response)
+
         except Exception as e:
             logger.error(f"Error processing batch: {e}", exc_info=True)
             self._live.emit(
@@ -961,6 +1167,8 @@ class AgentLoop:
         finally:
             # Ene: live trace — clear processing state
             self._live.update_state(processing=None, active_batch=None)
+            # Clear scene participants after batch is done
+            self.module_registry.clear_scene_participants()
 
     def _is_rate_limited(self, msg: "InboundMessage") -> bool:
         """Delegate to security.is_rate_limited (WHITELIST S3)."""
@@ -1043,9 +1251,46 @@ class AgentLoop:
             )
 
     async def _process_queue(self, channel_key: str) -> None:
-        """Process batches from the queue sequentially."""
+        """Process batches from the queue, merging if backlogged.
+
+        When multiple batches are waiting (LLM was slow, etc.), merges them
+        into one mega-batch so Ene sees everything at once and responds to
+        the most relevant — instead of processing stale batches one by one.
+        """
         queue = self._channel_queues.get(channel_key)
         while queue:
+            # Queue merge: if multiple batches waiting, collapse into one
+            if len(queue) > 1:
+                batches_to_merge = len(queue)
+                merged: list[InboundMessage] = []
+                while queue:
+                    merged.extend(queue.pop(0))
+
+                # Cap merged batch to prevent token explosion — keep newest, drop oldest
+                if len(merged) > self._queue_merge_cap:
+                    dropped_count = len(merged) - self._queue_merge_cap
+                    merged = merged[-self._queue_merge_cap:]
+                    logger.warning(
+                        f"Queue merge: dropped {dropped_count} oldest messages "
+                        f"(keeping {len(merged)} newest) in {channel_key}"
+                    )
+                    self._live.emit(
+                        "queue_merge_drop", channel_key,
+                        dropped=dropped_count,
+                        kept=len(merged),
+                    )
+
+                queue.append(merged)
+                logger.info(
+                    f"Queue merge: collapsed {batches_to_merge} batches → "
+                    f"{len(merged)} messages in {channel_key}"
+                )
+                self._live.emit(
+                    "queue_merge", channel_key,
+                    batches_merged=batches_to_merge,
+                    total_messages=len(merged),
+                )
+
             batch = queue.pop(0)
             try:
                 await self._process_batch(channel_key, batch)
@@ -1101,6 +1346,62 @@ class AgentLoop:
             muted_count=0,
             active_batch=None,
         )
+
+    # ── Brain toggle ──────────────────────────────────────────────────────
+
+    def pause_brain(self) -> None:
+        """Pause LLM responses. Discord stays connected, dashboard works, messages observed."""
+        self._brain_enabled = False
+        logger.info("Brain paused — messages observed, no LLM calls")
+        self._live.emit("brain_status_changed", "", status="paused")
+
+    def resume_brain(self) -> None:
+        """Resume LLM responses."""
+        self._brain_enabled = True
+        logger.info("Brain resumed — LLM responses active")
+        self._live.emit("brain_status_changed", "", status="resumed")
+
+    def is_brain_enabled(self) -> bool:
+        """Check if the brain (LLM response generation) is enabled."""
+        return self._brain_enabled
+
+    # ── Security state accessors (for control panel) ──────────────────────
+
+    def get_muted_users(self) -> dict[str, float]:
+        """Return muted users dict: caller_id → expiry timestamp."""
+        import time as _time
+        now = _time.time()
+        return {uid: exp for uid, exp in self._muted_users.items() if exp > now}
+
+    def get_rate_limit_state(self) -> dict[str, list[float]]:
+        """Return rate limit timestamps per user."""
+        return dict(self._user_message_timestamps)
+
+    def get_jailbreak_scores(self) -> dict[str, list[float]]:
+        """Return jailbreak detection scores per user."""
+        return dict(self._user_jailbreak_scores)
+
+    def mute_user(self, caller_id: str, duration_min: float = 30.0) -> None:
+        """Manually mute a user for the specified duration."""
+        import time as _time
+        self._muted_users[caller_id] = _time.time() + (duration_min * 60)
+        logger.info(f"Manual mute: {caller_id} for {duration_min}min")
+        self._live.emit("mute_event", "", sender=caller_id, duration_min=duration_min, reason="manual_dashboard")
+
+    def unmute_user(self, caller_id: str) -> bool:
+        """Unmute a user. Returns True if they were muted."""
+        if caller_id in self._muted_users:
+            del self._muted_users[caller_id]
+            logger.info(f"Manual unmute: {caller_id}")
+            return True
+        return False
+
+    def clear_rate_limit(self, caller_id: str) -> bool:
+        """Clear rate limit timestamps for a user."""
+        if caller_id in self._user_message_timestamps:
+            del self._user_message_timestamps[caller_id]
+            return True
+        return False
 
     async def _latency_warning(
         self,
@@ -1164,6 +1465,15 @@ class AgentLoop:
                     content_preview=msg.content[:100],
                     metadata_flags=", ".join(_meta_flags) if _meta_flags else None,
                 )
+
+                # Ene: brain toggle — observe but don't process when brain is off
+                if not self._brain_enabled:
+                    self._live.emit(
+                        "brain_paused", msg.session_key,
+                        sender=_sender_name,
+                        content_preview=msg.content[:80] if msg.content else "",
+                    )
+                    continue
 
                 # Ene: system messages bypass debounce
                 if msg.channel == "system":
@@ -1371,35 +1681,20 @@ class AgentLoop:
 
         existing_summary = self._session_summaries.get(key, "")
         if existing_summary:
-            prompt = f"""Update this conversation summary with the new messages below.
-Keep it concise (3-6 sentences). Write in 3rd person about Ene ("Ene", "she").
-Name who said or did each thing — check the [brackets] for speaker identity.
-Only say "Dad" did something if you see [Dad ...] or [Iitai @iitai.uwu] speaking.
-
-EXISTING SUMMARY:
-{existing_summary}
-
-NEW MESSAGES:
-{older_text}
-
-Write the updated summary:"""
+            prompt = self._prompts.load(
+                "summary_update",
+                existing_summary=existing_summary,
+                older_text=older_text,
+            )
         else:
-            prompt = f"""Summarize this conversation concisely (3-6 sentences).
-Write in 3rd person about Ene ("Ene", "she").
-Name who said or did each thing — check the [brackets] for speaker identity.
-Only say "Dad" did something if you see [Dad ...] or [Iitai @iitai.uwu] speaking.
-
-CONVERSATION:
-{older_text}
-
-Write the summary:"""
+            prompt = self._prompts.load("summary_new", older_text=older_text)
 
         try:
             model = self.consolidation_model or self.model
             _obs_start = _time.perf_counter()
             response = await self.provider.chat(
                 messages=[
-                    {"role": "system", "content": "You are summarizing a conversation Ene was part of. Write in 3rd person (\"Ene\", \"she\"). Name who said what using the [brackets] as your source of truth. Someone MENTIONING Dad is not the same as Dad speaking. No markdown. Plain text only."},
+                    {"role": "system", "content": self._prompts.load("summary_system")},
                     {"role": "user", "content": prompt},
                 ],
                 model=model,
@@ -1449,6 +1744,7 @@ Write the summary:"""
         # Ene: track who's talking for tool permission checks
         self._current_caller_id = f"{msg.channel}:{msg.sender_id}"
         self._current_inbound_msg = msg  # Ene: for message tool cleaning
+        self._last_message_content = None  # Reset per-batch
         self._last_message_time = _time.time()  # Ene: update for idle tracking
 
         # Ene: start debug trace for this message
@@ -1517,17 +1813,10 @@ Write the summary:"""
             # Ene: check if suspicious actions should trigger auto-mute
             self._check_auto_mute(msg)
 
-            # Ene: lightweight marker — conversation tracker owns full content.
-            # Storing raw content here caused duplication in the LLM prompt.
-            _batch_count = (msg.metadata or {}).get("debounce_count", 1)
-            _thread_count = (msg.metadata or {}).get("thread_count", 0)
-            if _batch_count > 1 or _thread_count > 0:
-                _trigger_name = msg.metadata.get("author_name", msg.sender_id) if msg.metadata else msg.sender_id
-                session.add_message("user", f"[lurk: {_trigger_name} and others — {_batch_count} messages]")
-            else:
-                _hist_content_lurk = condense_for_session(msg.content, msg.metadata or {})
-                sanitized_content = sanitize_dad_ids(_hist_content_lurk, caller_id)
-                session.add_message("user", f"{author}: {sanitized_content}")
+            # Ene: condensed content — strip thread chrome but keep actual text.
+            _hist_content_lurk = condense_for_session(msg.content, msg.metadata or {})
+            sanitized_content = sanitize_dad_ids(_hist_content_lurk, caller_id)
+            session.add_message("user", f"{author}: {sanitized_content}")
             self.sessions.save(session)
             # Write to interaction log
             self.memory.append_interaction_log(
@@ -1704,21 +1993,20 @@ Write the summary:"""
                 f"(tools_used={tools_used}). Response likely already sent via tool, "
                 f"or loop broke. NOT sending fallback message."
             )
-            # Store lightweight marker only if Ene actually did something (tool call).
+            # Store actual response in session if Ene did something (tool call).
             # If tools_used is empty, this was a pure failure (API error, empty response) —
             # storing a blank user+assistant pair would create ghost turns that make Ene
             # think the user keeps repeating themselves with no replies.
+            # Use the real message content captured from the message tool callback,
+            # NOT an opaque marker — the LLM parrots session history and will
+            # literally output "[responded via message tool]" as its reply if it
+            # sees that marker repeated in history.
             if tools_used:
-                _batch_count = (msg.metadata or {}).get("debounce_count", 1)
-                _thread_count = (msg.metadata or {}).get("thread_count", 0)
-                if _batch_count > 1 or _thread_count > 0:
-                    _trigger_name = msg.metadata.get("author_name", msg.sender_id) if msg.metadata else msg.sender_id
-                    session.add_message("user", f"[{_trigger_name} and others — {_batch_count} messages, {_thread_count} threads]")
-                else:
-                    _hist_pid = f"{msg.channel}:{msg.sender_id}"
-                    _hist_content = condense_for_session(msg.content, msg.metadata or {})
-                    session.add_message("user", sanitize_dad_ids(_hist_content, _hist_pid))
-                session.add_message("assistant", "",
+                _hist_pid = f"{msg.channel}:{msg.sender_id}"
+                _hist_content = condense_for_session(msg.content, msg.metadata or {})
+                session.add_message("user", sanitize_dad_ids(_hist_content, _hist_pid))
+                _assistant_content = self._last_message_content or "[no response]"
+                session.add_message("assistant", _assistant_content,
                                     tools_used=tools_used)
                 self.sessions.save(session)
             # Write to interaction logs for analysis
@@ -1734,18 +2022,14 @@ Write the summary:"""
             asyncio.create_task(self.module_registry.notify_message(msg, responded=True))
             return None
 
-        # Ene: store lightweight marker + response in session.
-        # Conversation tracker owns the full message content — storing it here too
-        # caused duplication (messages appeared in both session history AND thread context).
-        _batch_count = (msg.metadata or {}).get("debounce_count", 1)
-        _thread_count = (msg.metadata or {}).get("thread_count", 0)
-        if _batch_count > 1 or _thread_count > 0:
-            _trigger_name = msg.metadata.get("author_name", msg.sender_id) if msg.metadata else msg.sender_id
-            session.add_message("user", f"[{_trigger_name} and others — {_batch_count} messages, {_thread_count} threads]")
-        else:
-            _hist_pid = f"{msg.channel}:{msg.sender_id}"
-            _hist_content = condense_for_session(msg.content, msg.metadata or {})
-            session.add_message("user", sanitize_dad_ids(_hist_content, _hist_pid))
+        # Ene: store condensed content + response in session.
+        # condense_for_session() strips thread chrome (#msgN tags, section headers)
+        # but keeps the actual message text so the LLM has conversational continuity.
+        # The old marker approach ("[Name and others — N messages, N threads]") was
+        # nearly information-free and confused the LLM about what was actually said.
+        _hist_pid = f"{msg.channel}:{msg.sender_id}"
+        _hist_content = condense_for_session(msg.content, msg.metadata or {})
+        session.add_message("user", sanitize_dad_ids(_hist_content, _hist_pid))
         session.add_message("assistant", final_content,
                             tools_used=tools_used if tools_used else None)
         self.sessions.save(session)
@@ -1799,6 +2083,12 @@ Write the summary:"""
         if not cleaned:
             logger.debug("Response cleaned to empty, not sending")
             return None
+
+        # Ene: inject cleaned response into thread so threads show the full
+        # conversation (user → Ene → user → Ene). Without this, threads only
+        # contained user messages and the LLM couldn't see its own replies.
+        if _conv_mod and hasattr(_conv_mod, "tracker") and _conv_mod.tracker:
+            _conv_mod.tracker.add_ene_response(msg, cleaned)
 
         preview = cleaned[:120] + "..." if len(cleaned) > 120 else cleaned
         logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
@@ -1952,25 +2242,9 @@ Write the summary:"""
         roster = "\n".join(roster_lines)
         participant_list = ",".join(sorted(participants - {"Ene"}))
 
-        prompt = f"""Write a brief 3rd-person diary entry (2-4 sentences) about Ene's experience.
-
-IMPORTANT RULES:
-- Capture MOOD, ATMOSPHERE, and RELATIONSHIP DYNAMICS only.
-- Do NOT retell what specific people said or asked. The conversation system tracks that separately.
-- Do NOT mention unresolved questions or things Ene "didn't reply to."
-- Do NOT quote or paraphrase anyone's messages.
-- Focus on: How did Ene feel? What was the social vibe? Did any relationships shift?
-
-GOOD: "Morning was chill — Az and Kaale hung out, conversation was light and playful. Ene felt settled."
-BAD: "Azpxct asked Ene if she slept well and Kaale wondered if Ene works like Siri."
-
-## Participants
-{roster}
-
-## Conversation
-{conversation}
-
-Diary entry:"""
+        prompt = self._prompts.load(
+            "diary_user", roster=roster, conversation=conversation,
+        )
 
         # Use configurable consolidation model (falls back to main model)
         model = self.consolidation_model or self.model
@@ -1978,23 +2252,7 @@ Diary entry:"""
 
         # Ene: 3rd-person diary with explicit speaker attribution rules
         # (DS-SS extract-then-generate pattern, PLOS ONE 2024)
-        diary_system_prompt = (
-            "You are writing Ene's diary in third person. Ene is a digital girl who lives on Discord.\n"
-            "Write about what happened from Ene's perspective, but refer to her as \"Ene\" or \"she.\"\n"
-            "RULES:\n"
-            "- NEVER retell what people said or asked — that data lives in the conversation tracker.\n"
-            "- NEVER mention unanswered questions or things Ene 'didn't reply to' — this creates false obligations.\n"
-            "- Focus on mood, atmosphere, and relationship dynamics only.\n"
-            "- ONLY attribute actions to \"Dad\" if you see [Dad @iitai.uwu] or [Iitai @iitai.uwu] in the conversation.\n"
-            "- Someone MENTIONING \"Dad\" inside their message is NOT Dad speaking.\n"
-            "- Keep it brief: 2-4 natural sentences. No markdown, no headers, no lists.\n"
-            "- Be warm and genuine, like a friend writing about her day.\n"
-            "- NEVER describe HOW Ene's systems work (trust scoring, muting, identity verification, memory, etc.)\n"
-            "- NEVER include system details, durations, technical mechanisms, or operational specifics.\n"
-            "- NEVER invent personas, alter egos, or internal voices that don't exist.\n"
-            "- NEVER embellish with creative fiction — only document what actually happened.\n"
-            "- If users asked about Ene's systems, just say 'someone asked about her systems' — don't explain them."
-        )
+        diary_system_prompt = self._prompts.load("diary_system")
 
         for attempt in range(max_retries + 1):
             try:
@@ -2050,12 +2308,9 @@ Diary entry:"""
                         else:
                             lines.append(f"[{ts}] {m['content'][:300]}")
                     conversation = "\n".join(lines)
-                    prompt = f"""Write a brief 3rd-person diary entry (2-4 sentences).
-
-## Conversation
-{conversation}
-
-Diary entry:"""
+                    prompt = self._prompts.load(
+                        "diary_fallback", conversation=conversation,
+                    )
                     logger.warning(f"Diary consolidation attempt {attempt+1} failed ({e}), retrying")
                 else:
                     logger.error(f"Diary consolidation failed after {max_retries+1} attempts: {e}")

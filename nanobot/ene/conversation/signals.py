@@ -25,10 +25,24 @@ import re
 import time as _time
 from collections import Counter, deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from nanobot.ene.observatory.module_metrics import ModuleMetrics
     from .models import Thread, ThreadMessage, PendingMessage
+
+# Module-level metrics instance — set by set_metrics() during init.
+# NullModuleMetrics is used when observatory is unavailable.
+_metrics: "ModuleMetrics | None" = None
+
+
+def set_metrics(metrics: "ModuleMetrics") -> None:
+    """Attach a ModuleMetrics instance for classification observability.
+
+    Called once during module initialization (from loop.py or module setup).
+    """
+    global _metrics
+    _metrics = metrics
 
 # ── Signal weights ───────────────────────────────────────────────────────
 REPLY_CHAIN_WEIGHT = 1.0
@@ -358,6 +372,8 @@ def relevance_score(features: dict[str, float]) -> float:
 def classify_relevance(
     content: str,
     sender_id: str,
+    *,
+    _channel_key: str = "",
     **kwargs,
 ) -> tuple[str, float, dict[str, float]]:
     """One-call relevance classification.
@@ -377,6 +393,24 @@ def classify_relevance(
         classification = "context"
     else:
         classification = "drop"
+
+    # Record classification with full feature breakdown
+    if _metrics:
+        _metrics.record(
+            "scored",
+            _channel_key,
+            sender=sender_id,
+            result=classification,
+            confidence=round(score, 4),
+            features={k: round(v, 4) for k, v in features.items()},
+            raw_log_odds=round(
+                _PRIOR_LOG_ODDS + sum(
+                    _RELEVANCE_WEIGHTS.get(k, 0) * v
+                    for k, v in features.items()
+                ),
+                4,
+            ),
+        )
 
     return classification, score, features
 
@@ -560,6 +594,7 @@ def classify_with_state(
     return classify_relevance(
         content,
         sender_id,
+        _channel_key=channel_state.channel_key,
         is_at_mention=is_at_mention,
         is_reply_to_ene=is_reply_to_ene,
         ene_last_spoke_seconds_ago=channel_state.ene_last_spoke_seconds_ago(now),
