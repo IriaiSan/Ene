@@ -97,39 +97,100 @@ class DiscordChannel(BaseChannel):
             self._http = None
 
     async def send(self, msg: OutboundMessage) -> None:
-        """Send a message through Discord REST API."""
+        """Send a message through Discord REST API.
+
+        Messages over 2000 chars are split on paragraph/sentence boundaries
+        and sent as consecutive messages. Only the first chunk uses reply_to.
+        """
         if not self._http:
             logger.warning("Discord HTTP client not initialized")
             return
 
-        url = f"{DISCORD_API_BASE}/channels/{msg.chat_id}/messages"
-        payload: dict[str, Any] = {"content": msg.content}
-
-        if msg.reply_to:
-            payload["message_reference"] = {"message_id": msg.reply_to}
-            payload["allowed_mentions"] = {"replied_user": False}
-
-        headers = {"Authorization": f"Bot {self.config.token}"}
+        chunks = self._chunk_message(msg.content)
 
         try:
-            for attempt in range(3):
-                try:
-                    response = await self._http.post(url, headers=headers, json=payload)
-                    if response.status_code == 429:
-                        data = response.json()
-                        retry_after = float(data.get("retry_after", 1.0))
-                        logger.warning(f"Discord rate limited, retrying in {retry_after}s")
-                        await asyncio.sleep(retry_after)
-                        continue
-                    response.raise_for_status()
-                    return
-                except Exception as e:
-                    if attempt == 2:
-                        logger.error(f"Error sending Discord message: {e}")
-                    else:
-                        await asyncio.sleep(1)
+            for i, chunk in enumerate(chunks):
+                url = f"{DISCORD_API_BASE}/channels/{msg.chat_id}/messages"
+                payload: dict[str, Any] = {"content": chunk}
+
+                # Only the first chunk is a reply
+                if i == 0 and msg.reply_to:
+                    payload["message_reference"] = {"message_id": msg.reply_to}
+                    payload["allowed_mentions"] = {"replied_user": False}
+
+                headers = {"Authorization": f"Bot {self.config.token}"}
+
+                for attempt in range(3):
+                    try:
+                        response = await self._http.post(url, headers=headers, json=payload)
+                        if response.status_code == 429:
+                            data = response.json()
+                            retry_after = float(data.get("retry_after", 1.0))
+                            logger.warning(f"Discord rate limited, retrying in {retry_after}s")
+                            await asyncio.sleep(retry_after)
+                            continue
+                        response.raise_for_status()
+                        break
+                    except Exception as e:
+                        if attempt == 2:
+                            logger.error(f"Error sending Discord message (chunk {i+1}/{len(chunks)}): {e}")
+                        else:
+                            await asyncio.sleep(1)
         finally:
             await self._stop_typing(msg.chat_id)
+
+    @staticmethod
+    def _chunk_message(content: str, limit: int = 2000) -> list[str]:
+        """Split a message into chunks that fit Discord's character limit.
+
+        Splits on paragraph boundaries first, then sentence boundaries,
+        then hard-cuts as a last resort. Never breaks mid-word if avoidable.
+        """
+        if len(content) <= limit:
+            return [content]
+
+        chunks: list[str] = []
+        remaining = content
+
+        while remaining:
+            if len(remaining) <= limit:
+                chunks.append(remaining)
+                break
+
+            # Try to split at a paragraph boundary (\n\n)
+            cut = remaining.rfind("\n\n", 0, limit)
+            if cut > limit // 4:
+                chunks.append(remaining[:cut].rstrip())
+                remaining = remaining[cut:].lstrip("\n")
+                continue
+
+            # Try single newline
+            cut = remaining.rfind("\n", 0, limit)
+            if cut > limit // 4:
+                chunks.append(remaining[:cut].rstrip())
+                remaining = remaining[cut:].lstrip("\n")
+                continue
+
+            # Try sentence boundary
+            cut = remaining.rfind(". ", 0, limit)
+            if cut > limit // 4:
+                cut += 1  # Include the period
+                chunks.append(remaining[:cut].rstrip())
+                remaining = remaining[cut:].lstrip()
+                continue
+
+            # Try space (word boundary)
+            cut = remaining.rfind(" ", 0, limit)
+            if cut > limit // 4:
+                chunks.append(remaining[:cut].rstrip())
+                remaining = remaining[cut:].lstrip()
+                continue
+
+            # Hard cut — no good boundary found
+            chunks.append(remaining[:limit])
+            remaining = remaining[limit:]
+
+        return [c for c in chunks if c.strip()]
 
     async def _gateway_loop(self) -> None:
         """Main gateway loop: identify, heartbeat, dispatch events."""

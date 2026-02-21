@@ -224,3 +224,66 @@ class TestPendingMessage:
         msg = make_msg(msg_id="p2")
         pm = PendingMessage(message=msg, channel_key="discord:chan1")
         assert pm.discord_msg_id == "p2"
+
+
+# ── Phase 6: Thread trim vs last_shown_index ─────────────────────────────
+
+
+class TestThreadTrimAdjustsIndex:
+    """Phase 6: add_message trim adjusts last_shown_index correctly."""
+
+    def test_trim_adjusts_last_shown_index(self):
+        """After trimming, last_shown_index is reduced by removed count."""
+        thread = Thread.new("discord:chan1")
+
+        # Fill to THREAD_MAX_MESSAGES
+        for i in range(THREAD_MAX_MESSAGES):
+            thread.add_message(make_msg(msg_id=f"m{i}", content=f"msg {i}"))
+
+        # Set last_shown_index to 50
+        thread.last_shown_index = 50
+
+        # Add 5 more — should trigger trim, removing first 5
+        for i in range(5):
+            thread.add_message(make_msg(
+                msg_id=f"over_{i}", content=f"overflow {i}"
+            ))
+
+        assert len(thread.messages) == THREAD_MAX_MESSAGES
+        # last_shown_index should be reduced: 50 - 5 = 45
+        assert thread.last_shown_index == 45
+
+    def test_trim_clamps_to_zero(self):
+        """If last_shown_index < removed count, clamp to 0."""
+        thread = Thread.new("discord:chan1")
+
+        # Fill to max
+        for i in range(THREAD_MAX_MESSAGES):
+            thread.add_message(make_msg(msg_id=f"m{i}", content=f"msg {i}"))
+
+        # Set last_shown_index very low
+        thread.last_shown_index = 2
+
+        # Add 10 more — should remove 10, index should clamp to 0
+        for i in range(10):
+            thread.add_message(make_msg(
+                msg_id=f"over_{i}", content=f"overflow {i}"
+            ))
+
+        assert len(thread.messages) == THREAD_MAX_MESSAGES
+        assert thread.last_shown_index == 0
+
+    def test_no_trim_preserves_index(self):
+        """When no trim occurs, last_shown_index is unchanged."""
+        thread = Thread.new("discord:chan1")
+
+        # Add a few messages (well under max)
+        for i in range(5):
+            thread.add_message(make_msg(msg_id=f"m{i}", content=f"msg {i}"))
+
+        thread.last_shown_index = 3
+
+        # Add one more — no trim needed
+        thread.add_message(make_msg(msg_id="m5", content="msg 5"))
+
+        assert thread.last_shown_index == 3  # Unchanged

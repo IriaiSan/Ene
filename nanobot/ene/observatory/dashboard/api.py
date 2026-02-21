@@ -60,6 +60,13 @@ class ControlAPI:
         return self.loop.sessions
 
     @property
+    def daemon(self):
+        """DaemonModule — subconscious pre-processor."""
+        if not self.loop:
+            return None
+        return self.loop.module_registry.get_module("daemon")
+
+    @property
     def config(self):
         """Full config object (sanitized before exposure)."""
         if not self.loop:
@@ -246,9 +253,10 @@ def create_api_routes(
         if not tracer:
             return web.json_response({"error": "Live tracer not available"}, status=503)
         state = tracer.get_state()
-        # Inject brain status into state
+        # Inject brain + model status into state
         if _ctrl.loop:
             state["brain_enabled"] = _ctrl.loop.is_brain_enabled()
+            state["current_model"] = _ctrl.loop.get_model()
         return web.json_response(state)
 
     async def prompt_stream(request: web.Request) -> web.StreamResponse:
@@ -380,6 +388,56 @@ def create_api_routes(
             return web.json_response({"error": "Agent loop not available"}, status=503)
         _ctrl.loop.resume_brain()
         return web.json_response({"ok": True, "enabled": True})
+
+    # ── Model switching endpoints ────────────────────────────────────────
+
+    async def model_get(request: web.Request) -> web.Response:
+        """Get the current primary model."""
+        if not _ctrl.loop:
+            return web.json_response({"error": "Agent loop not available"}, status=503)
+        return web.json_response({"model": _ctrl.loop.get_model()})
+
+    async def model_set(request: web.Request) -> web.Response:
+        """Switch the primary model at runtime."""
+        if not _ctrl.loop:
+            return web.json_response({"error": "Agent loop not available"}, status=503)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        model = body.get("model", "").strip()
+        if not model:
+            return web.json_response({"error": "model required"}, status=400)
+
+        old = _ctrl.loop.set_model(model)
+        return web.json_response({"ok": True, "old": old, "new": model})
+
+    async def model_options(request: web.Request) -> web.Response:
+        """List known model options for the dropdown."""
+        from nanobot.providers.litellm_provider import DEFAULT_FALLBACK_MODELS
+
+        # Start with the fallback list, add extras for A/B testing
+        known = list(DEFAULT_FALLBACK_MODELS)
+        extras = [
+            "deepseek/deepseek-r1",
+            "deepseek/deepseek-v3",
+            "qwen/qwen3-30b-a3b",
+            "google/gemini-2.5-pro",
+            "anthropic/claude-sonnet-4",
+        ]
+        for m in extras:
+            if m not in known:
+                known.append(m)
+
+        # Include current model if not already in list
+        if _ctrl.loop:
+            current = _ctrl.loop.get_model()
+            if current not in known:
+                known.insert(0, current)
+
+        return web.json_response({"models": known})
 
     # ── People endpoints (Social Registry) ────────────────────────────────
 
@@ -1057,6 +1115,223 @@ def create_api_routes(
 
         return web.json_response(result)
 
+    # ── Settings endpoints (model config + custom LLMs) ──────────────────
+
+    # Custom models persist to workspace/settings/custom_models.json
+    _custom_models_path: Any = None  # Set lazily on first access
+
+    def _get_custom_models_path():
+        """Resolve the custom models storage path (lazy)."""
+        nonlocal _custom_models_path
+        if _custom_models_path is not None:
+            return _custom_models_path
+        from pathlib import Path
+        workspace = Path.home() / ".nanobot" / "workspace" / "settings"
+        workspace.mkdir(parents=True, exist_ok=True)
+        _custom_models_path = workspace / "custom_models.json"
+        return _custom_models_path
+
+    def _load_custom_models() -> list[dict]:
+        """Load custom models from disk."""
+        path = _get_custom_models_path()
+        if not path.exists():
+            return []
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+
+    def _save_custom_models(models: list[dict]) -> None:
+        """Persist custom models to disk and update pricing table."""
+        path = _get_custom_models_path()
+        path.write_text(json.dumps(models, indent=2), encoding="utf-8")
+        # Update runtime pricing table
+        from nanobot.ene.observatory.pricing import MODEL_PRICING
+        for m in models:
+            MODEL_PRICING[m["id"]] = {"input": m.get("input_price", 1.0), "output": m.get("output_price", 2.0)}
+
+    async def settings_get(request: web.Request) -> web.Response:
+        """Get full settings state: all model slots, custom models, known models."""
+        if not _ctrl.loop:
+            return web.json_response({"error": "Agent loop not available"}, status=503)
+
+        from nanobot.ene.observatory.pricing import MODEL_PRICING
+        from nanobot.providers.litellm_provider import DEFAULT_FALLBACK_MODELS
+
+        # Current model slots
+        primary = _ctrl.loop.get_model()
+        consolidation = _ctrl.loop.consolidation_model or ""
+
+        # Daemon model
+        daemon_model = ""
+        daemon_mod = _ctrl.daemon
+        if daemon_mod and daemon_mod.processor:
+            daemon_model = daemon_mod.processor._model or ""
+
+        # Fallback models
+        fallbacks = list(DEFAULT_FALLBACK_MODELS)
+
+        # Build known models list (all unique models from pricing + fallbacks + extras)
+        known_extras = [
+            "deepseek/deepseek-r1",
+            "deepseek/deepseek-v3",
+            "qwen/qwen3-30b-a3b",
+            "qwen/qwen3-235b-a22b",
+            "google/gemini-2.5-pro",
+            "google/gemini-2.5-flash",
+            "google/gemini-3-flash-preview",
+            "anthropic/claude-sonnet-4",
+        ]
+        known_models = sorted(set(
+            list(MODEL_PRICING.keys()) + fallbacks + known_extras
+        ))
+        # Include current models if not in list
+        for m in [primary, consolidation, daemon_model]:
+            if m and m not in known_models:
+                known_models.insert(0, m)
+
+        # Pricing info
+        pricing = {}
+        for model_id, prices in MODEL_PRICING.items():
+            pricing[model_id] = {"input": prices["input"], "output": prices["output"]}
+
+        # Custom models
+        custom_models = _load_custom_models()
+
+        return web.json_response({
+            "models": {
+                "primary": primary,
+                "consolidation": consolidation,
+                "daemon": daemon_model,
+            },
+            "fallback_models": fallbacks,
+            "known_models": known_models,
+            "pricing": pricing,
+            "custom_models": custom_models,
+        })
+
+    async def settings_set_model(request: web.Request) -> web.Response:
+        """Set a model slot (primary, consolidation, daemon)."""
+        if not _ctrl.loop:
+            return web.json_response({"error": "Agent loop not available"}, status=503)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        slot = body.get("slot", "").strip()
+        model = body.get("model", "").strip()
+
+        if slot not in ("primary", "consolidation", "daemon"):
+            return web.json_response({"error": "slot must be primary, consolidation, or daemon"}, status=400)
+        if not model:
+            return web.json_response({"error": "model required"}, status=400)
+
+        result = {"slot": slot, "model": model}
+
+        if slot == "primary":
+            old = _ctrl.loop.set_model(model)
+            result["old"] = old
+
+        elif slot == "consolidation":
+            old = _ctrl.loop.consolidation_model
+            _ctrl.loop.consolidation_model = model
+            result["old"] = old or ""
+            logger.info(f"Consolidation model set: {old} → {model}")
+
+        elif slot == "daemon":
+            daemon_mod = _ctrl.daemon
+            if daemon_mod and daemon_mod.processor:
+                old = daemon_mod.processor._model or ""
+                daemon_mod.processor._model = model
+                # Reset rotation state
+                daemon_mod.processor._model_index = 0
+                daemon_mod.processor._model_failures.clear()
+                result["old"] = old
+                logger.info(f"Daemon model set: {old} → {model}")
+            else:
+                return web.json_response({"error": "Daemon module not available"}, status=503)
+
+        return web.json_response({"ok": True, **result})
+
+    async def settings_clear_daemon_model(request: web.Request) -> web.Response:
+        """Clear daemon model override → revert to free model rotation."""
+        if not _ctrl.loop:
+            return web.json_response({"error": "Agent loop not available"}, status=503)
+
+        daemon_mod = _ctrl.daemon
+        if daemon_mod and daemon_mod.processor:
+            old = daemon_mod.processor._model or ""
+            daemon_mod.processor._model = None
+            daemon_mod.processor._model_index = 0
+            daemon_mod.processor._model_failures.clear()
+            logger.info(f"Daemon model cleared (was: {old}), reverted to free rotation")
+            return web.json_response({"ok": True, "old": old, "mode": "free_rotation"})
+        return web.json_response({"error": "Daemon module not available"}, status=503)
+
+    async def custom_models_list(request: web.Request) -> web.Response:
+        """List all custom models."""
+        return web.json_response(_load_custom_models())
+
+    async def custom_models_add(request: web.Request) -> web.Response:
+        """Add a custom model."""
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        model_id = body.get("id", "").strip()
+        if not model_id:
+            return web.json_response({"error": "Model ID required"}, status=400)
+        if "/" not in model_id:
+            return web.json_response({"error": "Model ID should be provider/model format (e.g. openai/gpt-4o)"}, status=400)
+
+        input_price = float(body.get("input_price", 1.0))
+        output_price = float(body.get("output_price", 2.0))
+        label = body.get("label", "").strip() or model_id
+
+        models = _load_custom_models()
+
+        # Check for duplicates
+        existing = next((m for m in models if m["id"] == model_id), None)
+        if existing:
+            # Update existing
+            existing["input_price"] = input_price
+            existing["output_price"] = output_price
+            existing["label"] = label
+        else:
+            models.append({
+                "id": model_id,
+                "label": label,
+                "input_price": input_price,
+                "output_price": output_price,
+            })
+
+        _save_custom_models(models)
+        return web.json_response({"ok": True, "model": model_id, "count": len(models)})
+
+    async def custom_models_delete(request: web.Request) -> web.Response:
+        """Delete a custom model."""
+        model_id = request.match_info.get("model_id", "")
+        if not model_id:
+            return web.json_response({"error": "model_id required"}, status=400)
+
+        models = _load_custom_models()
+        original_count = len(models)
+        models = [m for m in models if m["id"] != model_id]
+
+        if len(models) == original_count:
+            return web.json_response({"error": "Model not found"}, status=404)
+
+        _save_custom_models(models)
+
+        # Remove from runtime pricing if it was added
+        from nanobot.ene.observatory.pricing import MODEL_PRICING
+        MODEL_PRICING.pop(model_id, None)
+
+        return web.json_response({"ok": True, "deleted": model_id, "count": len(models)})
+
     # ── Route definitions ─────────────────────────────────────────────────
 
     routes = [
@@ -1086,6 +1361,10 @@ def create_api_routes(
         web.get("/api/brain", brain_status),
         web.post("/api/brain/pause", brain_pause),
         web.post("/api/brain/resume", brain_resume),
+        # Model switching (new)
+        web.get("/api/model", model_get),
+        web.post("/api/model", model_set),
+        web.get("/api/model/options", model_options),
         # People (new)
         web.get("/api/people", people_list),
         web.get("/api/people/{id}", person_detail),
@@ -1112,5 +1391,12 @@ def create_api_routes(
         web.post("/api/security/rate-limit/clear/{caller_id}", security_clear_rate_limit),
         # Config (new)
         web.get("/api/config", config_get),
+        # Settings (model config + custom LLMs)
+        web.get("/api/settings", settings_get),
+        web.post("/api/settings/model", settings_set_model),
+        web.delete("/api/settings/daemon-model", settings_clear_daemon_model),
+        web.get("/api/settings/custom-models", custom_models_list),
+        web.post("/api/settings/custom-models", custom_models_add),
+        web.delete("/api/settings/custom-models/{model_id:.+}", custom_models_delete),
     ]
     return routes, _set_live_tracer, _set_reset_callback, _ctrl

@@ -323,6 +323,11 @@ class StateVerifier:
 | File / Directory | Status | Who Can Modify |
 |------------------|--------|----------------|
 | `nanobot/agent/loop.py` | **LOCKED** | Dad + Claude Code (with approval) |
+| `nanobot/agent/batch_processor.py` | **LOCKED** | Dad + Claude Code (with approval) |
+| `nanobot/agent/message_processor.py` | **LOCKED** | Dad + Claude Code (with approval) |
+| `nanobot/agent/memory_consolidator.py` | **LOCKED** | Dad + Claude Code (with approval) |
+| `nanobot/agent/debounce_manager.py` | **LOCKED** | Dad + Claude Code (with approval) |
+| `nanobot/agent/state_inspector.py` | **LOCKED** | Dad + Claude Code (with approval) |
 | `nanobot/agent/security.py` | **LOCKED** | Dad + Claude Code (with approval) |
 | `nanobot/agent/response_cleaning.py` | **LOCKED** | Dad + Claude Code (with approval) |
 | `nanobot/session/` | **LOCKED** | Dad + Claude Code (with approval) |

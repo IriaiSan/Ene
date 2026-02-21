@@ -1,0 +1,402 @@
+/* Ene Settings — styles (extends style.css variables) */
+
+.settings-body {
+    overflow-y: auto;
+}
+
+/* ── Layout ──────────────────────────────────────── */
+
+.settings-layout {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 24px 24px 60px;
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+}
+
+/* ── Section ─────────────────────────────────────── */
+
+.settings-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+}
+
+.section-header {
+    margin-bottom: 16px;
+}
+
+.section-header h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+}
+
+.section-desc {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.section-desc code {
+    background: var(--bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: 'SF Mono', 'Cascadia Mono', monospace;
+    font-size: 12px;
+    color: var(--accent);
+}
+
+/* ── Model slot cards ────────────────────────────── */
+
+.model-slots {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.model-slot {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    transition: border-color 0.15s;
+}
+
+.model-slot:hover {
+    border-color: rgba(88, 166, 255, 0.3);
+}
+
+.slot-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 12px;
+}
+
+.slot-info h3 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.slot-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+.slot-badge {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.slot-badge-primary { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+.slot-badge-consolidation { background: rgba(188, 140, 255, 0.15); color: var(--purple); }
+.slot-badge-daemon { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+
+.slot-current {
+    font-family: 'SF Mono', 'Cascadia Mono', monospace;
+    font-size: 12px;
+    color: var(--cyan);
+    background: rgba(86, 212, 221, 0.08);
+    padding: 3px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+.slot-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.model-select {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    padding: 7px 10px;
+    font-size: 13px;
+    font-family: 'SF Mono', 'Cascadia Mono', monospace;
+    cursor: pointer;
+    appearance: auto;
+}
+
+.model-select:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+
+.model-select option {
+    background: var(--surface);
+    color: var(--text);
+}
+
+/* ── Pricing table ───────────────────────────────── */
+
+.pricing-table-wrap {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.pricing-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.pricing-table thead {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.pricing-table th {
+    background: var(--bg);
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+}
+
+.pricing-table td {
+    padding: 6px 12px;
+    border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+    color: var(--text);
+}
+
+.pricing-table tbody tr:hover td {
+    background: rgba(88, 166, 255, 0.04);
+}
+
+.pricing-table .model-id {
+    font-family: 'SF Mono', 'Cascadia Mono', monospace;
+    font-size: 12px;
+}
+
+.pricing-table .price-val {
+    font-family: 'SF Mono', 'Cascadia Mono', monospace;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.pricing-table .price-free {
+    color: var(--green);
+    font-weight: 600;
+}
+
+.model-status {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.model-status-active { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+.model-status-custom { background: rgba(86, 212, 221, 0.15); color: var(--cyan); }
+
+/* ── Custom model form ───────────────────────────── */
+
+.custom-model-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.form-row {
+    display: flex;
+    gap: 12px;
+    align-items: flex-end;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+}
+
+.form-group-sm {
+    flex: 0 0 120px;
+}
+
+.form-group label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.form-group .optional {
+    font-weight: 400;
+    color: var(--text-secondary);
+    opacity: 0.6;
+}
+
+.form-group .ctrl-input {
+    width: 100%;
+}
+
+.form-actions {
+    display: flex;
+    align-items: flex-end;
+    padding-bottom: 1px;
+}
+
+/* ── Custom models list ──────────────────────────── */
+
+.custom-models-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.custom-model-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: border-color 0.15s;
+}
+
+.custom-model-card:hover {
+    border-color: var(--cyan);
+}
+
+.custom-model-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.custom-model-id {
+    font-family: 'SF Mono', 'Cascadia Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.custom-model-meta {
+    font-size: 11px;
+    color: var(--text-secondary);
+    display: flex;
+    gap: 12px;
+}
+
+.custom-model-actions {
+    display: flex;
+    gap: 6px;
+}
+
+/* ── Runtime info grid ───────────────────────────── */
+
+.info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+}
+
+.info-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+}
+
+.info-card-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+
+.info-card-value {
+    font-family: 'SF Mono', 'Cascadia Mono', monospace;
+    font-size: 13px;
+    color: var(--text);
+    word-break: break-all;
+}
+
+/* ── Toast notification ──────────────────────────── */
+
+.toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 18px;
+    font-size: 13px;
+    color: var(--text);
+    z-index: 1000;
+    transition: opacity 0.3s, transform 0.3s;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.toast.hidden {
+    opacity: 0;
+    transform: translateY(10px);
+    pointer-events: none;
+}
+
+.toast.toast-success {
+    border-color: var(--green);
+    color: var(--green);
+}
+
+.toast.toast-error {
+    border-color: var(--red);
+    color: var(--red);
+}
+
+/* ── Responsive ──────────────────────────────────── */
+
+@media (max-width: 768px) {
+    .settings-layout {
+        padding: 16px;
+    }
+
+    .slot-header {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .slot-controls {
+        flex-wrap: wrap;
+    }
+
+    .form-row {
+        flex-direction: column;
+    }
+
+    .form-group-sm {
+        flex: 1;
+    }
+
+    .info-grid {
+        grid-template-columns: 1fr;
+    }
+}

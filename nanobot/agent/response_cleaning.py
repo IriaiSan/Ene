@@ -29,8 +29,11 @@ def condense_for_session(content: str, metadata: dict) -> str:
 
     The conversation tracker formats ALL active threads each time. If we store
     the full thread context in session history, the LLM sees the same thread
-    messages duplicated across turns. This strips the thread chrome and keeps
-    only the #msgN lines from the current batch.
+    messages duplicated across turns.
+
+    Instead of keeping all message lines (which duplicates thread context),
+    we keep only the LAST message with a count prefix. Thread context has
+    the full history — session only needs to record what happened.
 
     Runs on any thread-formatted content (thread_count > 0) OR debounced
     batches — not just debounced, since single-message turns can also have
@@ -58,7 +61,11 @@ def condense_for_session(content: str, metadata: dict) -> str:
             msg_lines.append("[background]")
 
     if msg_lines:
-        return "\n".join(msg_lines)
+        # Keep only the last message with a count prefix to avoid duplication.
+        # Thread context already has the full conversation — session only
+        # needs to record what happened in this batch.
+        count = metadata.get("debounce_count", len(msg_lines))
+        return f"[{count} messages in thread] {msg_lines[-1]}"
 
     return content
 
@@ -263,13 +270,9 @@ def clean_response(content: str, msg: Any, is_public: bool = False) -> str | Non
             content = sentences[0][:450] if sentences else ""
         logger.debug(f"Truncated public response from {len(content)} chars")
 
-    # Hard Discord limit
+    # No hard truncation — Discord adapter handles chunking if needed.
     truncated = False
     truncation_point = None
-    if len(content) > 1900:
-        truncation_point = 1900
-        content = content[:1900] + "..."
-        truncated = True
 
     # Record cleaning metrics
     if _metrics:

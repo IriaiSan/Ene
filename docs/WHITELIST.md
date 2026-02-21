@@ -55,6 +55,9 @@
 | A13 | Trace ID generated per batch in `_process_batch()`, propagated to all `ModuleMetrics` instances | Links all module events across the full pipeline for one message batch — enables cross-module tracing | 2026-02-19 |
 | A14 | Prompts extracted from source to `.txt` files in `nanobot/agent/prompts/` with `PromptLoader` | Version-tracked, file-based prompts enable A/B testing and behavioral correlation via manifest.json version tag | 2026-02-19 |
 | A15 | Module instrumentation uses module-level `_metrics` + `set_metrics()` pattern (not instance attributes) | Avoids modifying class __init__ signatures; metrics wiring happens in loop.py during module initialization | 2026-02-19 |
+| A16 | AgentLoop uses back-reference delegation pattern: extracted components hold `self._loop` reference | Keeps AgentLoop as sole state owner; extracted files (batch_processor, message_processor, memory_consolidator, debounce_manager, state_inspector) contain orchestration logic only | 2026-02-21 |
+| A17 | `_run_agent_loop()` stays in loop.py — it IS the core agent loop | Core iteration logic (LLM call → tool exec → loop control) is locked per A3; everything else is extractable | 2026-02-21 |
+| A18 | Runtime model hot-swap via dashboard dropdown | `set_primary_model()` on provider resets fallback rotation + clears failures; enables A/B testing models without restart | 2026-02-21 |
 
 ---
 
@@ -126,4 +129,5 @@
 
 | # | Overrides | Reason | Approved By | Date |
 |---|-----------|--------|-------------|------|
-| (none yet) | | | | |
+| E1 | S1 (500 line limit) | loop.py at 1156 lines post-extraction. Remaining code is __init__ (~120), _run_agent_loop (~216, LOCKED per A3), run() (~100), thin delegates (~200), helpers (~100). Further splitting would scatter AgentLoop state declaration across files with no readability gain. | Dad | 2026-02-21 |
+| E2 | CODING_PATTERNS (no `__future__` in upstream files) | Extracted `agent/*.py` files (batch_processor, message_processor, memory_consolidator, debounce_manager, state_inspector) use `from __future__ import annotations` + `TYPE_CHECKING` to avoid circular import with AgentLoop. Same pattern as `nanobot/ene/` modules — necessary for back-reference delegation. | Dad | 2026-02-21 |

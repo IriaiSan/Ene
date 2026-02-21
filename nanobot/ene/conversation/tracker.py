@@ -32,6 +32,11 @@ from .signals import (
     compute_thread_score,
     extract_keywords,
     score_against_pending,
+    score_lexical,
+    score_mention_affinity,
+    score_reply_chain,
+    score_speaker,
+    score_temporal,
 )
 from .storage import ThreadStorage
 from .formatter import build_threaded_context
@@ -40,15 +45,25 @@ if TYPE_CHECKING:
     from nanobot.bus.events import InboundMessage
     from nanobot.ene.social.person import PersonRegistry
     from nanobot.ene.observatory.module_metrics import ModuleMetrics
+    from nanobot.agent.live_trace import LiveTracer
 
 # Module-level metrics instance — set by set_metrics() during init.
 _metrics: "ModuleMetrics | None" = None
+# Module-level live tracer — set by set_live_tracer() during init.
+# Used by the Thread Inspector dashboard for real-time scoring detail.
+_live_tracer: "LiveTracer | None" = None
 
 
 def set_metrics(metrics: "ModuleMetrics") -> None:
     """Attach a ModuleMetrics instance for tracker observability."""
     global _metrics
     _metrics = metrics
+
+
+def set_live_tracer(tracer: "LiveTracer") -> None:
+    """Attach a LiveTracer for real-time thread assignment events."""
+    global _live_tracer
+    _live_tracer = tracer
 
 
 def _sanitize_dad_ids(content: str, caller_id: str) -> str:
@@ -215,16 +230,42 @@ class ConversationTracker:
         """
         # Fast path: reply-to -> thread
         if tm.reply_to_msg_id and tm.reply_to_msg_id in self._msg_to_thread:
-            return self._msg_to_thread[tm.reply_to_msg_id], False
+            tid = self._msg_to_thread[tm.reply_to_msg_id]
+            if _live_tracer:
+                _live_tracer.emit(
+                    "thread_assignment", channel_key,
+                    msg_id=tm.discord_msg_id,
+                    author=tm.author_name,
+                    content_preview=tm.content[:100],
+                    reply_to=tm.reply_to_msg_id,
+                    fast_path="reply_to_thread",
+                    outcome="assigned",
+                    assigned_to=tid[:8],
+                    keywords=list(extract_keywords(tm.content)),
+                )
+            return tid, False
 
         # Fast path: reply-to -> pending message (promote to thread)
         if tm.reply_to_msg_id and tm.reply_to_msg_id in self._pending_by_msg_id:
             idx = self._pending_by_msg_id[tm.reply_to_msg_id]
             if idx < len(self._pending):
                 pending = self._pending[idx]
-                return self._promote_pending(pending, tm, channel_key), True
+                new_tid = self._promote_pending(pending, tm, channel_key)
+                if _live_tracer:
+                    _live_tracer.emit(
+                        "thread_assignment", channel_key,
+                        msg_id=tm.discord_msg_id,
+                        author=tm.author_name,
+                        content_preview=tm.content[:100],
+                        reply_to=tm.reply_to_msg_id,
+                        fast_path="reply_to_pending",
+                        outcome="promoted",
+                        assigned_to=new_tid[:8],
+                        keywords=list(extract_keywords(tm.content)),
+                    )
+                return new_tid, True
 
-        # Score against active threads
+        # Score against active threads — capture per-signal breakdown
         channel_threads = [
             t
             for t in self._threads.values()
@@ -233,35 +274,111 @@ class ConversationTracker:
 
         best_thread_id: str | None = None
         best_score = 0.0
+        all_thread_scores: dict[str, dict] = {}
 
         for t in channel_threads:
-            score = compute_thread_score(tm, t, name_resolver)
-            if score > best_score:
-                best_score = score
+            signals = {
+                "reply_chain": score_reply_chain(tm, t),
+                "mention": score_mention_affinity(tm, t, name_resolver),
+                "temporal": score_temporal(tm, t),
+                "speaker": score_speaker(tm, t),
+                "lexical": score_lexical(tm, t),
+            }
+            total = sum(signals.values())
+            signals["total"] = round(total, 2)
+            all_thread_scores[t.thread_id[:8]] = {
+                **signals,
+                "msg_count": len(t.messages),
+                "keywords": t.topic_keywords[:5],
+                "state": t.state,
+            }
+            if total > best_score:
+                best_score = total
                 best_thread_id = t.thread_id
 
         # Score against pending messages
         best_pending_idx: int | None = None
         best_pending_score = 0.0
+        all_pending_scores: dict[str, dict] = {}
 
         for i, pm in enumerate(self._pending):
             if pm.channel_key != channel_key:
                 continue
             score = score_against_pending(tm, pm, name_resolver)
+            all_pending_scores[pm.discord_msg_id[:8] if pm.discord_msg_id else str(i)] = {
+                "author": pm.message.author_name,
+                "content_preview": pm.message.content[:60],
+                "total": round(score, 2),
+            }
             if score > best_pending_score:
                 best_pending_score = score
                 best_pending_idx = i
 
         # Decide: thread vs pending vs new pending
         if best_score >= ASSIGNMENT_THRESHOLD and best_score >= best_pending_score:
+            if _live_tracer:
+                _live_tracer.emit(
+                    "thread_assignment", channel_key,
+                    msg_id=tm.discord_msg_id,
+                    author=tm.author_name,
+                    content_preview=tm.content[:100],
+                    reply_to=tm.reply_to_msg_id,
+                    fast_path=None,
+                    thread_scores=all_thread_scores,
+                    pending_scores=all_pending_scores,
+                    best_thread_id=best_thread_id[:8] if best_thread_id else None,
+                    best_thread_score=round(best_score, 2),
+                    best_pending_score=round(best_pending_score, 2),
+                    threshold=ASSIGNMENT_THRESHOLD,
+                    outcome="assigned",
+                    assigned_to=best_thread_id[:8] if best_thread_id else None,
+                    keywords=list(extract_keywords(tm.content)),
+                )
             return best_thread_id, False
 
         if best_pending_score >= ASSIGNMENT_THRESHOLD and best_pending_idx is not None:
             pending = self._pending[best_pending_idx]
-            return self._promote_pending(pending, tm, channel_key), True
+            new_tid = self._promote_pending(pending, tm, channel_key)
+            if _live_tracer:
+                _live_tracer.emit(
+                    "thread_assignment", channel_key,
+                    msg_id=tm.discord_msg_id,
+                    author=tm.author_name,
+                    content_preview=tm.content[:100],
+                    reply_to=tm.reply_to_msg_id,
+                    fast_path=None,
+                    thread_scores=all_thread_scores,
+                    pending_scores=all_pending_scores,
+                    best_thread_id=best_thread_id[:8] if best_thread_id else None,
+                    best_thread_score=round(best_score, 2),
+                    best_pending_score=round(best_pending_score, 2),
+                    threshold=ASSIGNMENT_THRESHOLD,
+                    outcome="promoted",
+                    assigned_to=new_tid[:8],
+                    keywords=list(extract_keywords(tm.content)),
+                )
+            return new_tid, True
 
         # No match — add to pending
         self._add_pending(tm, channel_key)
+        if _live_tracer:
+            _live_tracer.emit(
+                "thread_assignment", channel_key,
+                msg_id=tm.discord_msg_id,
+                author=tm.author_name,
+                content_preview=tm.content[:100],
+                reply_to=tm.reply_to_msg_id,
+                fast_path=None,
+                thread_scores=all_thread_scores,
+                pending_scores=all_pending_scores,
+                best_thread_id=best_thread_id[:8] if best_thread_id else None,
+                best_thread_score=round(best_score, 2),
+                best_pending_score=round(best_pending_score, 2),
+                threshold=ASSIGNMENT_THRESHOLD,
+                outcome="pending",
+                assigned_to=None,
+                keywords=list(extract_keywords(tm.content)),
+            )
         return None, False
 
     def _promote_pending(
@@ -373,6 +490,16 @@ class ConversationTracker:
             f"Thread split: {parent.thread_id[:8]} -> {child.thread_id[:8]} "
             f"(trigger: {msg.author_name})"
         )
+        if _live_tracer:
+            _live_tracer.emit(
+                "thread_split", channel_key,
+                parent_id=parent.thread_id[:8],
+                child_id=child.thread_id[:8],
+                trigger_author=msg.author_name,
+                trigger_content=msg.content[:100],
+                parent_keywords=parent.topic_keywords[:5],
+                child_keywords=child.topic_keywords[:5],
+            )
         return child.thread_id
 
     # ── State machine ────────────────────────────────────────────────
@@ -399,6 +526,15 @@ class ConversationTracker:
                         message_count=len(thread.messages),
                         lifespan_ms=int(age * 1000),
                     )
+                if _live_tracer:
+                    _live_tracer.emit(
+                        "thread_lifecycle", thread.channel_key,
+                        thread_id=thread.thread_id[:8],
+                        old_state=old_state,
+                        new_state=STALE,
+                        msg_count=len(thread.messages),
+                        age_sec=int(age),
+                    )
 
             if thread.state in (STALE, RESOLVED) and age > THREAD_DEAD_SECONDS:
                 thread.state = DEAD
@@ -413,6 +549,15 @@ class ConversationTracker:
                         message_count=len(thread.messages),
                         lifespan_ms=int(age * 1000),
                     )
+                if _live_tracer:
+                    _live_tracer.emit(
+                        "thread_lifecycle", thread.channel_key,
+                        thread_id=thread.thread_id[:8],
+                        old_state=old_state,
+                        new_state=DEAD,
+                        msg_count=len(thread.messages),
+                        age_sec=int(age),
+                    )
 
         # Remove dead threads from active tracking
         for dt in dead_threads:
@@ -426,6 +571,13 @@ class ConversationTracker:
             pm for pm in self._pending if now - pm.created_at > THREAD_STALE_SECONDS
         ]
         for pm in expired_pending:
+            if _live_tracer:
+                _live_tracer.emit(
+                    "pending_expired", pm.channel_key,
+                    author=pm.message.author_name,
+                    content_preview=pm.message.content[:100],
+                    age_sec=int(now - pm.created_at),
+                )
             self._remove_pending(pm)
             self._dirty = True
 
@@ -518,6 +670,14 @@ class ConversationTracker:
                         logger.debug(
                             f"Thread {thread_id[:8]} resolved by {tm.author_name}"
                         )
+                        if _live_tracer:
+                            _live_tracer.emit(
+                                "thread_resolved", channel_key,
+                                thread_id=thread_id[:8],
+                                trigger_author=tm.author_name,
+                                trigger_content=tm.content[:100],
+                                msg_count=len(thread.messages),
+                            )
 
                     # Reactivate stale threads that get new messages
                     if thread.state == STALE:
@@ -630,15 +790,11 @@ class ConversationTracker:
         Called from loop.py after response cleaning, for both the direct return
         path and the message tool path.
         """
-        # Guard: never store garbled XML tool calls as Ene's response.
-        # DeepSeek sometimes outputs <functioninvoke> as raw text that
-        # slips past clean_response(). If it looks like XML, skip it.
-        if not content or re.search(
-            r'<\s*(?:function|invoke|parameter)', content, re.IGNORECASE
-        ):
-            logger.warning(
-                f"Skipping garbled Ene response ({len(content or '')} chars)"
-            )
+        # Guard: reject empty content. XML stripping is handled by
+        # clean_response() (invariant X2) — no duplicate check here.
+        # The old XML regex created false positives (e.g. "that function works"
+        # or Discord formatting like <@123> containing substrings).
+        if not content:
             return
 
         msg_ids = msg.metadata.get("message_ids", [])
@@ -714,6 +870,25 @@ class ConversationTracker:
             self._threads[thread_id].ene_involved = True
             self._threads[thread_id].ene_responded = True
             self._dirty = True
+
+    def commit_shown_indices(self, indices: dict[str, int]) -> None:
+        """Apply deferred last_shown_index updates after confirmed LLM success.
+
+        The formatter computes which threads were displayed but does NOT mutate
+        them. This method is called ONLY after the LLM response is confirmed
+        successful (session saved, thread marked). If the LLM call fails,
+        this is never called — threads stay at their previous index so the
+        next batch re-shows the content.
+        """
+        if not indices:
+            return
+        for thread_id, new_index in indices.items():
+            thread = self._threads.get(thread_id)
+            if thread and new_index > thread.last_shown_index:
+                thread.last_shown_index = new_index
+                self._dirty = True
+        if self._dirty:
+            logger.debug(f"Committed shown indices for {len(indices)} threads")
 
     def get_batch_participant_ids(
         self,

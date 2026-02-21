@@ -1,6 +1,8 @@
-# Ene Roadmap — Status as of February 20, 2026 (evening)
+# Ene Roadmap — Status as of February 22, 2026
 
 Current state snapshot. Updated each development session.
+
+> **v0.5 Comprehensive Implementation Plan** — See [`docs/ENE_V05_PLAN.md`](ENE_V05_PLAN.md) for the full 17-phase architecture plan (State Vector, EneCore, Memory Graph, RWKV migration, VTuber embodiment, custom model training).
 
 ---
 
@@ -38,7 +40,7 @@ Everything built during Era 3.5 (Feb 16-18). All systems operational.
 | Garbled XML defense | **Done** (Feb 20) | Broadened suppression, thread injection guard |
 | Status dashboard (bento box) | **Done** (Feb 20) | Kanban threads, pipeline view, pending cards fixed |
 | Fix duplicate response bug | **Fixed** (Feb 20) | Pre-execution guard blocks duplicate message tool calls; post-message turn limit; session marker leak fixed |
-| loop.py split (<500 lines/file) | **Not done** | Currently ~1800 lines, needs decomposition |
+| loop.py split (<500 lines/file) | **Done** (Feb 21) | Split into 5 modules: batch_processor, message_processor, memory_consolidator, debounce_manager, state_inspector. loop.py ~1156 lines |
 | Per-tool trust gating | **Not done** | Replace binary Dad/non-Dad with tier-based access |
 | Impulse layer | **Not done** | Fast pre-LLM responses for common patterns |
 | Mood tracker | **Not done** | Float-based mood that drifts with interactions |
@@ -140,8 +142,35 @@ Things we discovered need doing but deferred for now:
 10. Thread and session state cleared multiple times as needed
 11. Duplicate response bug resolved (pre-exec guard + post-message limit + marker fix)
 
+---
+
+## Session Summary — February 21-22, 2026
+
+### What was done
+1. **loop.py decomposition** — Split ~1800 line monolith into 5 focused modules:
+   - `batch_processor.py` (625 lines) — classify → merge → dispatch pipeline
+   - `message_processor.py` (493 lines) — per-message gate → decide → respond → store
+   - `memory_consolidator.py` (322 lines) — diary, running summaries, re-anchoring
+   - `debounce_manager.py` (126 lines) — debounce buffer + queue processor
+   - `state_inspector.py` (170 lines) — hard reset, model switch, brain toggle
+   - `loop.py` reduced to ~1156 lines (init + `_run_agent_loop` + `run()` + thin delegates)
+2. **Dashboard revamp** — 8-phase overhaul of live.html with new event types, state panel, prompt viewer
+3. **Thread Inspector page** — New `/threads` page with split layout (message log + decision tree visualization)
+4. **Model pricing fixes** — Added missing pricing for `anthropic/claude-sonnet-4`, `google/gemini-2.5-pro`
+5. **Cost panel** — Added per-model cost breakdown to dashboard metrics
+6. **Thread graph redesign** — Replaced kanban-style thread cards with node-based graph visualization
+7. **Settings page** — New `/settings` page with:
+   - Model slot management (primary, consolidation, daemon)
+   - Custom LLM registration with persistent storage
+   - Runtime pricing table with active/custom model indicators
+   - Runtime config info grid
+8. **Reply targeting fix** — Fixed two bugs preventing correct reply threading:
+   - `batch_processor.py`: `_build_thread_message` now uses thread's last non-Ene message ID instead of batch trigger ID
+   - `message_processor.py`: `_handle_response` now resolves reply targets via formatter's `msg_id_map` instead of raw metadata
+9. **ENE v0.5 Implementation Plan** — Documented full 17-phase architecture plan in `docs/ENE_V05_PLAN.md`
+
 ### Ene status: STABLE
-Running clean as of evening Feb 20. Session history stores actual responses. No leaked tags, markers, or garbled XML reaching Discord.
+All systems operational. Dashboard fully functional with 6 pages (Metrics, Status, Control, Live Trace, Threads, Settings).
 
 ### Test count
-1020 tests passing (up from 1018 at session start)
+1176 tests passing

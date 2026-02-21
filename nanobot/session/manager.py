@@ -31,7 +31,15 @@ class Session:
     last_consolidated: int = 0  # Number of messages already consolidated to files
     
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
-        """Add a message to the session."""
+        """Add a message to the session.
+
+        Rejects None, empty, or whitespace-only content — empty turns create
+        ghost pairs that confuse the LLM into thinking the user keeps repeating
+        themselves with no replies.
+        """
+        if not content or not content.strip():
+            logger.warning(f"Session.add_message: empty content for role={role}, skipping")
+            return
         msg = {
             "role": role,
             "content": content,

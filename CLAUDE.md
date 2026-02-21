@@ -39,7 +39,7 @@ nanobot/channels/           Discord + Telegram adapters
 nanobot/providers/          LLM provider abstraction (OpenRouter / litellm)
 ~/.nanobot/workspace/       Runtime data: memory, diary, logs, threads, social
 ~/.nanobot/sessions/        Per-channel conversation history (JSONL)
-tests/ene/                  Ene module tests (~725 passing)
+tests/ene/                  Ene module tests
 docs/                       Architecture, memory, social, capabilities, research, whitelist, changelog
 ```
 
@@ -47,7 +47,12 @@ docs/                       Architecture, memory, social, capabilities, research
 
 | File | Purpose |
 |------|---------|
-| `nanobot/agent/loop.py` | Central agent loop — debounce, classify, LLM, respond (~1800 lines) |
+| `nanobot/agent/loop.py` | Central agent loop — init, `_run_agent_loop`, `run()`, thin delegates (~1156 lines) |
+| `nanobot/agent/batch_processor.py` | Batch pipeline: classify → merge → dispatch (625 lines) |
+| `nanobot/agent/message_processor.py` | Per-message: gate → decide → respond → store (493 lines) |
+| `nanobot/agent/memory_consolidator.py` | Diary consolidation, running summaries, re-anchoring (322 lines) |
+| `nanobot/agent/debounce_manager.py` | Debounce buffer + queue processor (126 lines) |
+| `nanobot/agent/state_inspector.py` | Hard reset, model switch, brain toggle, security accessors (170 lines) |
 | `nanobot/ene/conversation/tracker.py` | Thread detection, `last_shown_index` tracking, `mark_ene_responded()` |
 | `nanobot/ene/conversation/formatter.py` | Multi-thread context building (`build_threaded_context()`) |
 | `nanobot/ene/conversation/signals.py` | Math-based classification (`classify_with_state()`), keyword extraction |
@@ -155,17 +160,20 @@ Live dashboard at `localhost:18791/live` with real-time SSE stream.
 ## Message pipeline
 
 ```
-Discord WS → channel adapter → bus
-→ rate limit check (10 msgs/30s, Dad exempt)
-→ debounce buffer (3.5s sliding window, 15 msg batch limit, 40 msg hard cap)
-→ queue merge (if backlogged batches exist, collapse into one mega-batch, cap 30 msgs)
-→ per-message: daemon (free LLM, 5s) → math classifier fallback → hard override (ene mention/reply)
-→ classify: RESPOND / CONTEXT / DROP (muted → drop, Dad-alone → promote to RESPOND)
-→ conversation tracker: ingest_batch() → build_context() (thread-aware formatting)
-→ agent loop → LLM (DeepSeek v3.2 via OpenRouter, 45s timeout, fallback rotation)
-→ tool execution loop (restricted tools Dad-only, message tool terminates loop)
-→ clean_response() (strip reflection, XML, paths, IDs, enforce length)
-→ Discord REST (reply threading via message_reference)
+Discord WS → channel adapter → bus                     [discord.py]
+→ rate limit check (10 msgs/30s, Dad exempt)             [loop.py run()]
+→ debounce buffer (3.5s sliding window, 15 msg cap)      [debounce_manager.py]
+→ queue merge (backlogged → mega-batch, cap 30)          [debounce_manager.py]
+→ classify: daemon → math fallback → hard override       [batch_processor.py]
+→ merge: thread-aware or flat                            [batch_processor.py]
+→ dispatch: single-thread or per-thread loop             [batch_processor.py]
+→ gate: DM trust check, mute check, lurk/respond        [message_processor.py]
+→ history: consolidation, hybrid summary, re-anchor      [memory_consolidator.py]
+→ agent loop → LLM (45s timeout, fallback rotation)      [loop.py _run_agent_loop]
+→ tool execution loop (restricted Dad-only, msg terminates) [loop.py _run_agent_loop]
+→ session store + thread marking                         [message_processor.py]
+→ clean_response() (strip XML, paths, IDs, length)       [response_cleaning.py]
+→ Discord REST (reply threading via message_reference)    [discord.py]
 ```
 
 Key behaviors:
@@ -277,7 +285,7 @@ python -m pytest tests/providers/ -q    # Provider tests (record/replay)
 - pytest only — no unittest, no nose (WHITELIST T3)
 - Mock external APIs in tests — tests must work offline (WHITELIST T4)
 - All tests must pass before commit (WHITELIST T5)
-- ~1020 tests currently passing
+- ~1176 tests currently passing
 - **Full testing guide:** `docs/TESTING.md`
 - **Development workflow:** `docs/DEVELOPMENT.md`
 

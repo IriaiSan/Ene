@@ -9,6 +9,18 @@ let lastEventId = 0;
 let evtSource = null;
 let lastBatchChannel = null;
 
+// ── Rolling stats (accumulated from SSE events) ──
+let statsReceived = 0;
+let statsResponded = 0;
+let statsLurked = 0;
+let latencySum = 0;
+let latencyCount = 0;
+let lastMsgTime = null;
+let lastMsgSender = '';
+let lastRespTime = null;
+let lastDaemonTime = null;
+let lastDaemonLatency = 0;
+
 // ── DOM refs ──────────────────────────────────────
 const timeline = document.getElementById('timeline');
 const container = document.getElementById('events-container');
@@ -42,6 +54,7 @@ const TYPE_CLASS = {
     queue_merge_drop: 'evt-error',
     brain_paused:   'evt-system',
     brain_status_changed: 'evt-system',
+    model_switch:   'evt-system',
 };
 
 // Module events (mod_*) get the module class
@@ -72,6 +85,9 @@ const TYPE_LABEL = {
     error:          'ERROR',
     brain_paused:   '🧠 PAUSED',
     brain_status_changed: '🧠 BRAIN',
+    model_switch:   '🔄 MODEL',
+    queue_merge:    'Q MERGE',
+    queue_merge_drop: 'Q DROP',
 };
 
 // ── Render helpers ────────────────────────────────
@@ -103,10 +119,18 @@ function renderBody(evt) {
             const cls = evt.classification || '?';
             const clsUpper = cls.toUpperCase();
             let html = `<b>${esc(evt.sender)}</b> → <b>${clsUpper}</b>`;
+            if (evt.confidence != null) html += ` (${Math.round(evt.confidence * 100)}%)`;
             if (evt.model) html += ` <code>${esc(evt.model)}</code>`;
             if (evt.latency_ms) html += ` ${evt.latency_ms}ms`;
-            if (evt.fallback) html += ' (fallback)';
+            if (evt.fallback) html += ' <span style="color:var(--yellow)">(fallback)</span>';
             if (evt.reason) html += `<div class="evt-detail">${esc(evt.reason)}</div>`;
+            if (evt.topic || evt.tone) {
+                let topicTone = '';
+                if (evt.topic) topicTone += `topic: ${esc(evt.topic)}`;
+                if (evt.topic && evt.tone) topicTone += ' · ';
+                if (evt.tone) topicTone += `tone: ${esc(evt.tone)}`;
+                html += `<div class="evt-detail">${topicTone}</div>`;
+            }
             if (evt.security_flags) html += `<div class="evt-detail" style="color:var(--red)">⚠ ${esc(evt.security_flags)}</div>`;
             return html;
         }
@@ -135,8 +159,16 @@ function renderBody(evt) {
         case 'llm_response': {
             let html = `Iteration <b>${evt.iteration}</b>`;
             if (evt.latency_ms) html += ` — ${evt.latency_ms}ms`;
+            if (evt.content_preview) {
+                const len = evt.content_preview.length;
+                html += ` · ${len > 999 ? (len/1000).toFixed(1)+'k' : len} chars`;
+            }
+            if (evt.has_reasoning) html += ` <span style="color:var(--yellow)">💭 reasoning</span>`;
             if (evt.tool_calls && evt.tool_calls.length > 0) {
                 html += `<div class="evt-detail">Tools: <code>${esc(evt.tool_calls.join(', '))}</code></div>`;
+            }
+            if (evt.reasoning_preview) {
+                html += `<div class="evt-detail" style="color:var(--yellow);opacity:0.7">💭 "${esc(evt.reasoning_preview)}"</div>`;
             }
             if (evt.content_preview) {
                 html += `<div class="evt-detail">"${esc(evt.content_preview)}"</div>`;
@@ -158,8 +190,13 @@ function renderBody(evt) {
 
         case 'response_clean': {
             let html = `${evt.raw_length} → ${evt.clean_length} chars`;
+            if (evt.raw_length > 0 && evt.clean_length < evt.raw_length) {
+                const stripped = evt.raw_length - evt.clean_length;
+                const pct = Math.round(stripped / evt.raw_length * 100);
+                html += ` <span style="color:var(--text-secondary)">(${stripped} stripped · ${pct}%)</span>`;
+            }
             if (evt.was_blocked) html += ' <b style="color:var(--red)">BLOCKED</b>';
-            else if (evt.was_truncated) html += ' (truncated)';
+            else if (evt.was_truncated) html += ' <span style="color:var(--yellow)">(truncated)</span>';
             return html;
         }
 
@@ -170,7 +207,8 @@ function renderBody(evt) {
         }
 
         case 'mute_event':
-            return `<b>${esc(evt.sender)}</b> muted ${evt.duration_min}min (${esc(evt.reason)})`;
+            return `<b>${esc(evt.sender)}</b> muted ${evt.duration_min}min` +
+                (evt.reason ? ` <span style="color:var(--text-secondary)">(${esc(evt.reason)})</span>` : '');
 
         case 'hard_reset':
             return `<b>Hard reset</b> — queues cleared, session dropped, fresh start`;
@@ -186,6 +224,15 @@ function renderBody(evt) {
                 ? '<b style="color:var(--green)">Brain resumed</b> — LLM responses active'
                 : '<b style="color:var(--red)">Brain paused</b> — messages observed, no LLM calls';
 
+        case 'model_switch':
+            return `<b>${esc(evt.old_model)}</b> → <b style="color:var(--green)">${esc(evt.new_model)}</b>`;
+
+        case 'queue_merge':
+            return `Merged <b>${evt.batches_merged}</b> batches → <b>${evt.total_messages}</b> messages`;
+
+        case 'queue_merge_drop':
+            return `Queue overflow: dropped <b style="color:var(--red)">${evt.dropped}</b>, kept <b>${evt.kept}</b>`;
+
         default:
             return JSON.stringify(evt);
     }
@@ -199,11 +246,20 @@ function clearTimeline(message) {
 }
 
 function addEvent(evt) {
-    // Hard reset from server — wipe timeline before rendering the reset marker
+    // Hard reset from server — wipe timeline and rolling stats
     if (evt.type === 'hard_reset') {
         clearTimeline('⚡ Hard reset — fresh start');
         lastEventId = evt.id;
         eventCount = 0;
+        // Reset rolling stats
+        statsReceived = 0; statsResponded = 0; statsLurked = 0;
+        latencySum = 0; latencyCount = 0;
+        lastMsgTime = null; lastMsgSender = '';
+        lastRespTime = null; lastDaemonTime = null; lastDaemonLatency = 0;
+        document.getElementById('st-received').textContent = '0';
+        document.getElementById('st-responded').textContent = '0';
+        document.getElementById('st-lurked').textContent = '0';
+        document.getElementById('st-avg-latency').textContent = '—';
         return;
     }
 
@@ -236,6 +292,41 @@ function addEvent(evt) {
     eventCount++;
     countEl.textContent = `${eventCount} events`;
     lastEventId = evt.id;
+
+    // ── Update rolling stats ──
+    const now = Date.now();
+    switch (evt.type) {
+        case 'msg_arrived':
+            statsReceived++;
+            lastMsgTime = now;
+            lastMsgSender = evt.sender || '';
+            document.getElementById('st-received').textContent = statsReceived;
+            break;
+        case 'response_sent':
+            statsResponded++;
+            lastRespTime = now;
+            document.getElementById('st-responded').textContent = statsResponded;
+            break;
+        case 'should_respond':
+            if (!evt.decision) {
+                statsLurked++;
+                document.getElementById('st-lurked').textContent = statsLurked;
+            }
+            break;
+        case 'llm_response':
+            if (evt.latency_ms) {
+                latencySum += evt.latency_ms;
+                latencyCount++;
+                const avg = Math.round(latencySum / latencyCount);
+                document.getElementById('st-avg-latency').textContent =
+                    avg > 999 ? (avg/1000).toFixed(1)+'s' : avg+'ms';
+            }
+            break;
+        case 'daemon_result':
+            lastDaemonTime = now;
+            lastDaemonLatency = evt.latency_ms || 0;
+            break;
+    }
 
     // Auto-scroll if not paused
     if (!paused) {
@@ -303,19 +394,39 @@ function updateStatePanel(state) {
     const procEl = document.getElementById('st-processing');
     procEl.textContent = proc ? '✓' : '—';
     procEl.style.color = proc ? 'var(--green)' : '';
+    // Pulse animation on processing state-item
+    const procItem = procEl.closest('.state-item');
+    if (procItem) procItem.classList.toggle('processing-active', !!proc);
 
     // Muted
     document.getElementById('st-muted').textContent = state.muted_count || 0;
 
-    // Brain indicator (in header)
+    // Brain indicator (interactive button in header)
     const brainEl = document.getElementById('brain-indicator');
     if (brainEl && state.brain_enabled !== undefined) {
+        brainEl._brainState = state.brain_enabled;
         if (state.brain_enabled) {
             brainEl.textContent = '🧠 ON';
-            brainEl.className = 'badge connected';
+            brainEl.className = 'ctrl-btn brain-btn brain-on';
+            brainEl.title = 'Brain is active — click to pause';
         } else {
             brainEl.textContent = '🧠 OFF';
-            brainEl.className = 'badge disconnected';
+            brainEl.className = 'ctrl-btn brain-btn brain-off';
+            brainEl.title = 'Brain is paused — click to resume';
+        }
+    }
+
+    // Model indicator (in state panel + sync dropdown)
+    const modelEl = document.getElementById('st-model');
+    if (modelEl && state.current_model) {
+        // Show short model name (last segment after /)
+        const parts = state.current_model.split('/');
+        modelEl.textContent = parts[parts.length - 1];
+        modelEl.title = state.current_model;
+        // Sync dropdown if value changed externally
+        const sel = document.getElementById('model-select');
+        if (sel && sel.value !== state.current_model) {
+            sel.value = state.current_model;
         }
     }
 
@@ -384,6 +495,30 @@ btnHardReset.addEventListener('click', async () => {
     }
 });
 
+// Brain toggle
+const brainBtn = document.getElementById('brain-indicator');
+brainBtn.addEventListener('click', async () => {
+    const isOn = brainBtn._brainState;
+    if (isOn) {
+        // Pausing requires confirmation
+        if (!confirm('Pause brain? Ene will observe messages but won\'t respond until resumed.')) return;
+    }
+    const action = isOn ? 'pause' : 'resume';
+    brainBtn.disabled = true;
+    try {
+        const res = await fetch(`${API}/api/brain/${action}`, { method: 'POST' });
+        if (!res.ok) {
+            const data = await res.json();
+            alert(`Brain ${action} failed: ` + (data.error || res.statusText));
+        }
+        // State update comes via SSE state event
+    } catch (e) {
+        alert(`Brain ${action} failed: ` + e.message);
+    } finally {
+        brainBtn.disabled = false;
+    }
+});
+
 // Auto-pause on scroll up, auto-resume on scroll to bottom
 timeline.addEventListener('scroll', () => {
     const atBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 40;
@@ -436,7 +571,17 @@ function renderMessages(msgs) {
         } else {
             text = String(content);
         }
-        const roleClass = role === 'system' ? 'msg-system' : role === 'assistant' ? 'msg-assistant' : 'msg-user';
+        const roleClass = role === 'system' ? 'msg-system'
+            : role === 'assistant' ? 'msg-assistant'
+            : role === 'tool' ? 'msg-tool'
+            : 'msg-user';
+        // System prompts: collapsible (default collapsed, click to expand)
+        if (role === 'system' && text.length > 200) {
+            const charCount = text.length;
+            return `<div class="msg-block ${roleClass} msg-collapsible msg-collapsed" onclick="this.classList.toggle('msg-collapsed')">` +
+                `<span class="msg-role">SYSTEM (${charCount} chars) ▸</span>` +
+                `<pre class="msg-text">${esc(text)}</pre></div>`;
+        }
         return `<div class="msg-block ${roleClass}"><span class="msg-role">${esc(role.toUpperCase())}</span><pre class="msg-text">${esc(text)}</pre></div>`;
     }).join('');
 }
@@ -490,19 +635,44 @@ function addPromptEntry(entry) {
     } else if (t === 'prompt_ene') {
         el.classList.add('pe-ene');
         const msgs = entry.messages || [];
+        // Rough token estimate from total content length
+        let totalChars = 0;
+        for (const m of msgs) {
+            const c = m.content;
+            if (Array.isArray(c)) {
+                for (const p of c) totalChars += (p.text || '').length;
+            } else if (c) {
+                totalChars += c.length;
+            }
+        }
+        const tokenEst = Math.round(totalChars / 4);
+        const tokenLabel = tokenEst > 999 ? (tokenEst/1000).toFixed(1)+'k' : tokenEst;
         el.innerHTML = `
             <div class="pe-header">
                 <span class="pe-badge pe-badge-ene">ENE PROMPT</span>
                 <span class="pe-ts">${esc(entry.ts)}</span>
                 <span class="pe-model">${esc(entry.model || '')}</span>
-                <span class="pe-meta">${msgs.length} messages</span>
+                <span class="pe-meta">${msgs.length} messages · ~${tokenLabel} tokens</span>
             </div>
             <div class="pe-messages">${renderMessages(msgs)}</div>
         `;
     } else if (t === 'prompt_ene_response') {
         el.classList.add('pe-ene-resp');
-        const toolHtml = (entry.tool_calls && entry.tool_calls.length)
-            ? `<div class="pe-section"><div class="pe-section-label">TOOL CALLS</div><pre class="pe-text">${esc(JSON.stringify(entry.tool_calls, null, 2))}</pre></div>`
+        // Format tool calls as individual cards instead of raw JSON
+        let toolHtml = '';
+        if (entry.tool_calls && entry.tool_calls.length) {
+            const cards = entry.tool_calls.map(tc => {
+                const name = tc.name || tc.function?.name || '?';
+                const args = tc.args || tc.function?.arguments || '';
+                const argsStr = typeof args === 'object' ? JSON.stringify(args) : String(args);
+                const argsShort = argsStr.length > 200 ? argsStr.slice(0, 200) + '…' : argsStr;
+                return `<div class="tool-call-card"><span class="tool-call-name">${esc(name)}</span>` +
+                    `<span class="tool-call-args">${esc(argsShort)}</span></div>`;
+            }).join('');
+            toolHtml = `<div class="pe-section"><div class="pe-section-label">TOOL CALLS (${entry.tool_calls.length})</div><div class="pe-tool-cards">${cards}</div></div>`;
+        }
+        const reasoningHtml = entry.reasoning_content
+            ? `<div class="pe-section pe-reasoning"><div class="pe-section-label" style="color:var(--yellow)">💭 REASONING (${entry.reasoning_content.length} chars)</div><pre class="pe-text" style="color:var(--yellow);opacity:0.8">${esc(entry.reasoning_content)}</pre></div>`
             : '';
         el.innerHTML = `
             <div class="pe-header">
@@ -510,6 +680,7 @@ function addPromptEntry(entry) {
                 <span class="pe-ts">${esc(entry.ts)}</span>
                 <span class="pe-meta">iter ${entry.iteration || '?'} — ${entry.latency_ms || '?'}ms</span>
             </div>
+            ${reasoningHtml}
             ${entry.content ? `<div class="pe-section"><div class="pe-section-label">CONTENT</div><pre class="pe-text">${esc(entry.content)}</pre></div>` : ''}
             ${toolHtml}
         `;
@@ -663,10 +834,16 @@ function renderContextMemory(mem) {
     const badge = document.getElementById('ctx-mem-budget');
     if (!mem) { el.innerHTML = '<div class="ctx-empty">Memory not available</div>'; return; }
 
-    badge.textContent = `${mem.total_tokens} / ${mem.budget} tokens`;
     const pctUsed = mem.budget > 0 ? Math.round(mem.total_tokens / mem.budget * 100) : 0;
+    const budgetClass = pctUsed > 80 ? 'danger' : pctUsed > 50 ? 'warn' : '';
+    badge.textContent = `${mem.total_tokens} / ${mem.budget} tokens (${pctUsed}%)`;
 
-    let html = '';
+    // Overall budget bar at top
+    let html = `<div class="ctx-mem-budget-bar">`;
+    html += `<div class="ctx-token-bar" style="height:6px;margin-bottom:8px">`;
+    html += `<div class="ctx-token-fill ${budgetClass}" style="width:${Math.min(pctUsed,100)}%"></div>`;
+    html += `</div></div>`;
+
     for (const [name, sec] of Object.entries(mem.sections || {})) {
         const secPct = sec.max_tokens > 0 ? Math.round(sec.used_tokens / sec.max_tokens * 100) : 0;
         const fillClass = secPct > 80 ? 'danger' : secPct > 50 ? 'warn' : '';
@@ -679,8 +856,11 @@ function renderContextMemory(mem) {
         if (sec.entries && sec.entries.length > 0) {
             html += `<div class="ctx-mem-entries">`;
             for (const e of sec.entries) {
+                // Color importance by value: 9-10 red (critical), 7-8 yellow (high), else dim
+                const impClass = e.importance >= 9 ? 'importance-critical'
+                    : e.importance >= 7 ? 'importance-high' : 'importance';
                 html += `<div class="ctx-mem-entry">`;
-                html += `<span class="importance">★${e.importance}</span> `;
+                html += `<span class="${impClass}">★${e.importance}</span> `;
                 html += esc(e.content);
                 html += `</div>`;
             }
@@ -708,8 +888,17 @@ function renderContextThreads(threads) {
         html += `<div class="ctx-thread-meta">`;
         html += `<span class="ctx-thread-state ${esc(t.state)}">${esc(t.state)}</span>`;
         html += `<span style="font-size:10px;color:var(--muted)">${t.msg_count} msgs · ${(t.participants || []).join(', ')}</span>`;
-        if (t.ene_involved) html += `<span style="font-size:9px;color:var(--cyan,#56d4dd)">Ene involved</span>`;
+        if (t.ene_involved) html += `<span class="ctx-ene-badge">Ene ✓</span>`;
         html += `</div>`;
+        // Show last_shown_index for debugging re-replay issues
+        if (t.last_shown_index != null) {
+            html += `<div style="font-size:9px;color:var(--muted);margin:2px 0">shown: ${t.last_shown_index}/${t.msg_count}</div>`;
+        }
+        // Show time since last activity
+        if (t.last_activity) {
+            const ago = formatAgo(new Date(t.last_activity).getTime());
+            html += `<div style="font-size:9px;color:var(--muted)">active ${ago}</div>`;
+        }
         if (t.recent_messages && t.recent_messages.length > 0) {
             html += `<div class="ctx-thread-msgs">`;
             for (const m of t.recent_messages) {
@@ -743,9 +932,22 @@ function renderContextSessions(sessions) {
 
     // Show the most active session (usually the main Discord channel)
     const s = sessions[0];
-    info.textContent = `${s.msg_count || 0} msgs · ~${s.token_estimate || 0} tokens · ${s.responded_count || 0} responses`;
+    const tokenEst = s.token_estimate || 0;
+    const tokenMax = 60000; // Auto-rotation threshold
+    const tokenPct = Math.round(tokenEst / tokenMax * 100);
+    const respRate = s.msg_count > 0 ? Math.round((s.responded_count || 0) / s.msg_count * 100) : 0;
 
-    let html = '';
+    info.textContent = `${s.msg_count || 0} msgs · ${s.responded_count || 0} responses (${respRate}%)`;
+
+    // Token budget bar
+    const barClass = tokenPct > 80 ? 'danger' : tokenPct > 50 ? 'warn' : '';
+    const tokenLabel = tokenEst > 999 ? (tokenEst/1000).toFixed(1)+'k' : tokenEst;
+    let html = `<div style="padding:4px 10px;font-size:10px;color:var(--muted)">`;
+    html += `${tokenLabel} / 60k tokens (${tokenPct}%)`;
+    html += `<div class="ctx-token-bar" style="height:5px;margin-top:3px">`;
+    html += `<div class="ctx-token-fill ${barClass}" style="width:${Math.min(tokenPct,100)}%"></div>`;
+    html += `</div></div>`;
+
     for (const m of (s.recent || [])) {
         const cls = m.role === 'assistant' ? 'assistant' : 'user';
         html += `<div class="ctx-session-msg ${cls}">`;
@@ -781,12 +983,168 @@ document.getElementById('btn-ctx-refresh').addEventListener('click', () => {
     pollContext();
 });
 
+// ── Model Selector ────────────────────────────────
+
+const modelSelect = document.getElementById('model-select');
+let modelOptionsLoaded = false;
+
+async function loadModelOptions() {
+    if (modelOptionsLoaded) return;
+    try {
+        const res = await fetch(API + '/api/model/options');
+        if (!res.ok) return;
+        const data = await res.json();
+        const models = data.models || [];
+        modelSelect.innerHTML = '';
+        for (const m of models) {
+            const opt = document.createElement('option');
+            opt.value = m;
+            // Short display name (last segment)
+            const parts = m.split('/');
+            opt.textContent = parts[parts.length - 1];
+            modelSelect.appendChild(opt);
+        }
+        modelOptionsLoaded = true;
+
+        // Set current model
+        const curRes = await fetch(API + '/api/model');
+        if (curRes.ok) {
+            const curData = await curRes.json();
+            if (curData.model) {
+                modelSelect.value = curData.model;
+            }
+        }
+    } catch (e) { /* silent */ }
+}
+
+modelSelect.addEventListener('change', async () => {
+    const model = modelSelect.value;
+    if (!model) return;
+    modelSelect.disabled = true;
+    try {
+        const res = await fetch(API + '/api/model', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({model}),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            alert('Model switch failed: ' + (data.error || res.statusText));
+        }
+    } catch (e) {
+        alert('Model switch failed: ' + e.message);
+    } finally {
+        modelSelect.disabled = false;
+    }
+});
+
+// ── Activity timer updates ────────────────────────
+
+function formatAgo(ts) {
+    if (!ts) return '—';
+    const sec = Math.round((Date.now() - ts) / 1000);
+    if (sec < 5) return 'just now';
+    if (sec < 60) return sec + 's ago';
+    if (sec < 3600) return Math.floor(sec / 60) + 'm ago';
+    return Math.floor(sec / 3600) + 'h ago';
+}
+
+function updateActivityTimers() {
+    const msgEl = document.getElementById('st-last-msg');
+    const respEl = document.getElementById('st-last-resp');
+    const daemonEl = document.getElementById('st-last-daemon');
+    if (msgEl) {
+        msgEl.textContent = lastMsgTime
+            ? `${formatAgo(lastMsgTime)}${lastMsgSender ? ' · ' + lastMsgSender : ''}`
+            : '—';
+    }
+    if (respEl) respEl.textContent = formatAgo(lastRespTime);
+    if (daemonEl) {
+        daemonEl.textContent = lastDaemonTime
+            ? `${formatAgo(lastDaemonTime)}${lastDaemonLatency ? ' (' + lastDaemonLatency + 'ms)' : ''}`
+            : '—';
+    }
+}
+
+// ── Cost by Model polling ────────────────────────
+
+async function pollCostByModel() {
+    try {
+        const res = await fetch(API + '/api/cost/by-model?days=7');
+        if (!res.ok) return;
+        const data = await res.json();
+        renderCostByModel(data);
+    } catch (_) { /* network error, skip */ }
+}
+
+function renderCostByModel(data) {
+    const wrap = document.getElementById('cost-by-model');
+    if (!wrap) return;
+
+    if (!data || !data.length) {
+        wrap.innerHTML = '<span class="muted">No cost data yet</span>';
+        return;
+    }
+
+    // Sort by cost descending
+    data.sort((a, b) => (b.cost || 0) - (a.cost || 0));
+    const maxCost = data[0]?.cost || 1;
+    let totalCost = 0;
+    let totalCalls = 0;
+    let totalTokens = 0;
+
+    let html = '';
+    for (const row of data) {
+        const cost = row.cost || 0;
+        const calls = row.calls || 0;
+        const tokens = row.tokens || 0;
+        const avgLatency = row.avg_latency || 0;
+        totalCost += cost;
+        totalCalls += calls;
+        totalTokens += tokens;
+
+        // Split model name: provider/model
+        const parts = (row.model || 'unknown').split('/');
+        const provider = parts.length > 1 ? parts[0] : '';
+        const modelName = parts.length > 1 ? parts.slice(1).join('/') : parts[0];
+        const barPct = maxCost > 0 ? Math.round((cost / maxCost) * 100) : 0;
+        const avgCost = calls > 0 ? (cost / calls).toFixed(4) : '—';
+        const tokPerCall = calls > 0 ? Math.round(tokens / calls).toLocaleString() : '—';
+
+        html += `<div class="cost-row" title="${esc(row.model)}\nCalls: ${calls}\nAvg cost: $${avgCost}/call\nAvg tokens: ${tokPerCall}/call\nAvg latency: ${Math.round(avgLatency)}ms">`;
+        html += `<div class="cost-model">${provider ? '<span class="cost-provider">' + esc(provider) + '/</span>' : ''}${esc(modelName)}</div>`;
+        html += `<div class="cost-bar-track"><div class="cost-bar-fill" style="width:${barPct}%"></div></div>`;
+        html += `<div class="cost-value">$${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}</div>`;
+        html += `<div class="cost-calls">${calls}×</div>`;
+        html += `</div>`;
+    }
+
+    // Total row
+    html += `<div class="cost-total-row">`;
+    html += `<span class="cost-total-label">Total</span>`;
+    html += `<span class="cost-total-value">$${totalCost < 0.01 ? totalCost.toFixed(4) : totalCost.toFixed(2)}</span>`;
+    html += `</div>`;
+
+    // Avg per response
+    if (totalCalls > 0) {
+        const avgPerCall = totalCost / totalCalls;
+        const avgTok = Math.round(totalTokens / totalCalls);
+        html += `<div class="cost-avg">${totalCalls} calls · avg $${avgPerCall.toFixed(4)}/call · avg ${avgTok.toLocaleString()} tok/call</div>`;
+    }
+
+    wrap.innerHTML = html;
+}
+
 // ── Init ──────────────────────────────────────────
 
 connectSSE();
 connectPromptSSE();
+loadModelOptions();
 setInterval(pollState, 3000);
 pollModuleHealth();
 setInterval(pollModuleHealth, 10000);
 pollContext();
 setInterval(pollContext, 5000);
+setInterval(updateActivityTimers, 1000);
+pollCostByModel();
+setInterval(pollCostByModel, 15000);

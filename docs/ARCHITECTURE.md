@@ -15,12 +15,17 @@ C:\Users\Ene\
 ├── Ene\                          # Git repo (fork of HKUDS/nanobot)
 │   ├── nanobot\                  # Source code (editable install)
 │   │   ├── agent\
-│   │   │   ├── loop.py           # Core message processing (Ene mods here)
-│   │   │   ├── context.py        # System prompt builder
-│   │   │   ├── memory.py         # Legacy MEMORY.md / HISTORY.md persistence
-│   │   │   ├── skills.py         # Skill loading system
-│   │   │   ├── subagent.py       # Background task agents
-│   │   │   └── tools\            # Tool implementations
+│   │   │   ├── loop.py               # Core agent loop + _run_agent_loop (1156 lines)
+│   │   │   ├── batch_processor.py    # Batch pipeline: classify → merge → dispatch (625 lines)
+│   │   │   ├── message_processor.py  # Per-message: gate → decide → respond → store (493 lines)
+│   │   │   ├── memory_consolidator.py # Diary, summaries, re-anchoring (322 lines)
+│   │   │   ├── debounce_manager.py   # Debounce buffer + queue processor (126 lines)
+│   │   │   ├── state_inspector.py    # Hard reset, model switch, brain toggle (170 lines)
+│   │   │   ├── context.py            # System prompt builder
+│   │   │   ├── memory.py             # Legacy MEMORY.md / HISTORY.md persistence
+│   │   │   ├── skills.py             # Skill loading system
+│   │   │   ├── subagent.py           # Background task agents
+│   │   │   └── tools\                # Tool implementations
 │   │   ├── ene\                  # Ene subsystem modules
 │   │   │   ├── __init__.py       # EneModule base, EneContext, ModuleRegistry
 │   │   │   ├── memory\           # Module 1: Memory system

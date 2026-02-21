@@ -387,3 +387,192 @@ class TestBatchParticipantIds:
 
         ids = tracker.get_batch_participant_ids([r1, r2, r3], [], "discord:chan1")
         assert ids == ["discord:100", "discord:200", "discord:300"]
+
+
+# ── Phase 1: commit_shown_indices tests ──────────────────────────────────
+
+
+class TestCommitShownIndices:
+    """Phase 1: Deferred last_shown_index updates via commit_shown_indices()."""
+
+    @pytest.fixture
+    def tracker(self, tmp_path: Path) -> ConversationTracker:
+        t = ConversationTracker(thread_dir=tmp_path / "threads")
+        t._storage.ensure_dirs()
+        return t
+
+    def test_commit_updates_thread_index(self, tracker):
+        """commit_shown_indices advances last_shown_index on matching threads."""
+        msg1 = make_inbound(msg_id="m1", sender_id="100", content="hey")
+        msg2 = make_inbound(msg_id="m2", sender_id="100", content="there")
+        tracker.ingest_batch([msg1, msg2], [], "discord:chan1")
+
+        thread = list(tracker._threads.values())[0]
+        thread_id = thread.thread_id
+        assert thread.last_shown_index == 0
+
+        tracker.commit_shown_indices({thread_id: 2})
+        assert thread.last_shown_index == 2
+
+    def _make_thread_in_tracker(self, tracker, n_messages=2, sender_id="100"):
+        """Helper: create a thread directly in tracker state."""
+        from nanobot.ene.conversation.models import Thread, ThreadMessage
+        import time
+        thread = Thread.new("discord:chan1")
+        for i in range(n_messages):
+            tm = ThreadMessage(
+                discord_msg_id=f"m{i}_{sender_id}",
+                author_name="TestUser",
+                author_username="testuser",
+                author_id=f"discord:{sender_id}",
+                content=f"message {i}",
+                timestamp=time.time(),
+                reply_to_msg_id=None,
+                is_reply_to_ene=False,
+                classification="respond",
+                is_ene=False,
+            )
+            thread.add_message(tm)
+        tracker._threads[thread.thread_id] = thread
+        return thread
+
+    def test_commit_does_not_regress_index(self, tracker):
+        """commit_shown_indices never moves index backward."""
+        thread = self._make_thread_in_tracker(tracker, n_messages=2)
+        thread.last_shown_index = 5  # Already advanced
+
+        tracker.commit_shown_indices({thread.thread_id: 3})
+        assert thread.last_shown_index == 5  # Stayed at 5, not regressed
+
+    def test_commit_ignores_unknown_threads(self, tracker):
+        """commit_shown_indices silently skips unknown thread IDs."""
+        # Should not raise
+        tracker.commit_shown_indices({"nonexistent_thread_id": 10})
+
+    def test_commit_empty_dict(self, tracker):
+        """commit_shown_indices with empty dict is a no-op."""
+        tracker.commit_shown_indices({})
+        # No crash, no state change
+
+    def test_commit_sets_dirty_flag(self, tracker):
+        """commit_shown_indices sets _dirty when indices change."""
+        thread = self._make_thread_in_tracker(tracker, n_messages=2)
+        tracker._dirty = False  # Reset
+
+        tracker.commit_shown_indices({thread.thread_id: 2})
+        assert tracker._dirty is True
+
+    def test_commit_does_not_set_dirty_on_no_change(self, tracker):
+        """commit_shown_indices does NOT set _dirty when no index actually changes."""
+        tracker._dirty = False
+        tracker.commit_shown_indices({"nonexistent": 5})
+        assert tracker._dirty is False
+
+    def test_commit_multiple_threads(self, tracker):
+        """commit_shown_indices updates multiple threads at once."""
+        t1 = self._make_thread_in_tracker(tracker, n_messages=3, sender_id="100")
+        t2 = self._make_thread_in_tracker(tracker, n_messages=2, sender_id="200")
+
+        tracker.commit_shown_indices({
+            t1.thread_id: 3,
+            t2.thread_id: 2,
+        })
+
+        assert t1.last_shown_index == 3
+        assert t2.last_shown_index == 2
+
+
+# ── Phase 4: add_ene_response tests ─────────────────────────────────────
+
+
+class TestAddEneResponse:
+    """Phase 4: add_ene_response stores content and no longer has XML guard."""
+
+    @pytest.fixture
+    def tracker(self, tmp_path: Path) -> ConversationTracker:
+        t = ConversationTracker(thread_dir=tmp_path / "threads")
+        t._storage.ensure_dirs()
+        return t
+
+    def _setup_thread_with_msg(self, tracker, msg_id="m1"):
+        """Create a thread and map a message ID to it."""
+        from nanobot.ene.conversation.models import Thread, ThreadMessage
+        import time as _t
+        thread = Thread.new("discord:chan1")
+        tm = ThreadMessage(
+            discord_msg_id=msg_id,
+            author_name="TestUser",
+            author_username="testuser",
+            author_id="discord:123",
+            content="hello",
+            timestamp=_t.time(),
+            reply_to_msg_id=None,
+            is_reply_to_ene=False,
+            classification="respond",
+            is_ene=False,
+        )
+        thread.add_message(tm)
+        tracker._threads[thread.thread_id] = thread
+        tracker._msg_to_thread[msg_id] = thread.thread_id
+        return thread
+
+    def test_stores_clean_content(self, tracker):
+        """add_ene_response adds Ene's message to the correct thread."""
+        thread = self._setup_thread_with_msg(tracker, "m1")
+        msg = make_inbound(msg_id="m1", content="hello")
+
+        tracker.add_ene_response(msg, "hi there!")
+
+        ene_msgs = [m for m in thread.messages if m.is_ene]
+        assert len(ene_msgs) == 1
+        assert ene_msgs[0].content == "hi there!"
+        assert ene_msgs[0].author_name == "Ene"
+
+    def test_rejects_empty(self, tracker):
+        """add_ene_response silently skips empty content."""
+        thread = self._setup_thread_with_msg(tracker, "m1")
+        msg = make_inbound(msg_id="m1", content="hello")
+
+        tracker.add_ene_response(msg, "")
+
+        ene_msgs = [m for m in thread.messages if m.is_ene]
+        assert len(ene_msgs) == 0
+
+    def test_rejects_none(self, tracker):
+        """add_ene_response silently skips None content."""
+        thread = self._setup_thread_with_msg(tracker, "m1")
+        msg = make_inbound(msg_id="m1", content="hello")
+
+        tracker.add_ene_response(msg, None)
+
+        ene_msgs = [m for m in thread.messages if m.is_ene]
+        assert len(ene_msgs) == 0
+
+    def test_allows_function_word(self, tracker):
+        """Content mentioning 'function' is NOT rejected (old XML guard removed)."""
+        thread = self._setup_thread_with_msg(tracker, "m1")
+        msg = make_inbound(msg_id="m1", content="hello")
+
+        tracker.add_ene_response(msg, "that function works perfectly")
+
+        ene_msgs = [m for m in thread.messages if m.is_ene]
+        assert len(ene_msgs) == 1
+        assert "function works" in ene_msgs[0].content
+
+    def test_allows_discord_formatting(self, tracker):
+        """Discord formatting like <@123> is NOT rejected (old XML guard removed)."""
+        thread = self._setup_thread_with_msg(tracker, "m1")
+        msg = make_inbound(msg_id="m1", content="hello")
+
+        tracker.add_ene_response(msg, "Hey <@123456>, check this out!")
+
+        ene_msgs = [m for m in thread.messages if m.is_ene]
+        assert len(ene_msgs) == 1
+        assert "<@123456>" in ene_msgs[0].content
+
+    def test_no_matching_thread(self, tracker):
+        """add_ene_response with no matching thread is a no-op."""
+        msg = make_inbound(msg_id="unknown_msg", content="hello")
+        # No thread mapped to this msg_id
+        tracker.add_ene_response(msg, "hi there!")
+        # Just shouldn't crash

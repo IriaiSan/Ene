@@ -4,6 +4,32 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-21b] — Runtime Model Switching + Codebase Modularization
+
+### Added
+- **Runtime model hot-swap** (`litellm_provider.py`, `loop.py`, `api.py`): New `set_primary_model()` on provider resets fallback rotation + clears failure counters. Dashboard dropdown at `GET/POST /api/model` + `GET /api/model/options` lets Dad swap models without restart. Enables A/B testing DeepSeek vs Qwen vs Gemini.
+- **Reasoning content on dashboard** (`loop.py`, `live.js`): `reasoning_content` from R1/R1 Distill models now visible in prompt log (yellow REASONING section) and timeline events (`💭 reasoning` indicator).
+- **Model selector UI** (`live.html`, `live.js`, `live.css`): Dropdown in dashboard header, syncs with state polling, shows current model in state panel.
+- **`model_switch` trace event** (`live.js`): Timeline shows old → new model on every switch.
+
+### Changed — Codebase Modularization (loop.py: 2400 → 1156 lines)
+- **Phase 3 — `batch_processor.py`** (625 lines): Extracted `_process_batch()` into `BatchProcessor` class. Pipeline stages: tag stale → rotate session → classify (daemon + math) → merge → dispatch (single/multi-thread).
+- **Phase 4 — `message_processor.py`** (493 lines): Extracted `_process_message()` into `MessageProcessor` class. Pipeline: DM gate → mute check → lurk/respond → slash commands → consolidation → history → reanchor → LLM dispatch → thread marking → session store → response cleaning.
+- **Phase 5 — `memory_consolidator.py`** (322 lines): Extracted `_consolidate_memory()`, `_generate_running_summary()`, `_should_reanchor()` into `MemoryConsolidator` class.
+- **Phase 6 — `debounce_manager.py`** (126 lines): Extracted `_debounce_timer()`, `_enqueue_batch()`, `_process_queue()` into `DebounceManager` class.
+- **Phase 6 — `state_inspector.py`** (170 lines): Extracted `hard_reset()`, model switching, brain toggle, and security accessors into `StateInspector` class.
+- **Back-reference pattern**: All extracted components hold `self._loop` reference. AgentLoop remains sole state owner (WHITELIST A16).
+- **Import cleanup**: Removed 6 unused imports from loop.py (`random`, `json_repair`, `is_dad_impersonation`, `has_content_impersonation`, `sanitize_dad_ids`, `condense_for_session`).
+
+### Fixed
+- **`test_marker_content_not_empty`**: Source-scanning test updated to check `message_processor.py` (where session storage code now lives) instead of only `loop.py`.
+
+### Tests
+- 19 new tests: `test_litellm_model_switch.py` (9), `test_model_switch.py` (10)
+- Full suite: 1176 passing
+
+---
+
 ## [2026-02-21a] — Catch-All XML Defense + Remote Dashboard + Dev/Prod Separation
 
 ### Fixed

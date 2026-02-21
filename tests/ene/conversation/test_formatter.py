@@ -486,3 +486,122 @@ class TestBuildSingleThreadContext:
         )
 
         assert "Eve" not in content
+
+
+# ── Phase 1: Deferred last_shown_index tests ─────────────────────────────
+
+
+class TestDeferredShownIndices:
+    """Phase 1: Verify formatter doesn't mutate last_shown_index and defers
+    index updates via _thread_shown_indices metadata."""
+
+    def test_build_threaded_context_does_not_mutate_last_shown_index(self):
+        """build_threaded_context must NOT change last_shown_index on any thread."""
+        msgs = [
+            make_thread_msg(msg_id="m1", author="Alice", content="hey ene"),
+            make_thread_msg(msg_id="m2", author="Alice", content="second msg"),
+        ]
+        thread = make_thread(ene_involved=True, messages=msgs)
+        original_index = thread.last_shown_index
+        threads = {thread.thread_id: thread}
+
+        respond = [make_inbound(msg_id="m1", content="hey ene")]
+        build_threaded_context(
+            threads=threads,
+            pending=[],
+            respond_msgs=respond,
+            context_msgs=[],
+            channel_key="discord:chan1",
+        )
+
+        assert thread.last_shown_index == original_index
+
+    def test_thread_shown_indices_in_metadata(self):
+        """Returned InboundMessage has _thread_shown_indices with correct values."""
+        msgs = [
+            make_thread_msg(msg_id="m1", author="Alice", content="hey ene"),
+            make_thread_msg(msg_id="m2", author="Alice", content="second"),
+            make_thread_msg(msg_id="m3", author="Alice", content="third"),
+        ]
+        thread = make_thread(ene_involved=True, messages=msgs)
+        threads = {thread.thread_id: thread}
+
+        respond = [make_inbound(msg_id="m1", content="hey ene")]
+        result = build_threaded_context(
+            threads=threads,
+            pending=[],
+            respond_msgs=respond,
+            context_msgs=[],
+            channel_key="discord:chan1",
+        )
+
+        indices = result.metadata.get("_thread_shown_indices", {})
+        assert thread.thread_id in indices
+        assert indices[thread.thread_id] == len(thread.messages)
+
+    def test_thread_shown_indices_multiple_threads(self):
+        """_thread_shown_indices includes all displayed Ene threads."""
+        t1_msgs = [make_thread_msg(msg_id="m1", author="Alice", content="hey")]
+        t1 = make_thread(ene_involved=True, messages=t1_msgs)
+
+        t2_msgs = [
+            make_thread_msg(msg_id="m2", author="Bob", content="yo ene"),
+            make_thread_msg(msg_id="m3", author="Bob", content="follow up"),
+        ]
+        t2 = make_thread(ene_involved=True, messages=t2_msgs)
+
+        threads = {t1.thread_id: t1, t2.thread_id: t2}
+        respond = [make_inbound(msg_id="m1")]
+        result = build_threaded_context(
+            threads=threads,
+            pending=[],
+            respond_msgs=respond,
+            context_msgs=[],
+            channel_key="discord:chan1",
+        )
+
+        indices = result.metadata.get("_thread_shown_indices", {})
+        assert t1.thread_id in indices
+        assert t2.thread_id in indices
+        assert indices[t1.thread_id] == 1  # 1 message
+        assert indices[t2.thread_id] == 2  # 2 messages
+
+    def test_thread_shown_indices_excludes_bg_threads(self):
+        """Background (non-Ene) threads should NOT be in _thread_shown_indices."""
+        ene_msgs = [make_thread_msg(msg_id="m1", author="Alice", content="hey ene")]
+        ene_thread = make_thread(ene_involved=True, messages=ene_msgs)
+
+        bg_msgs = [make_thread_msg(
+            msg_id="m2", author="Bob", content="side convo",
+            classification="context",  # context classification → ene_involved stays False
+        )]
+        bg_thread = make_thread(ene_involved=False, messages=bg_msgs)
+
+        threads = {ene_thread.thread_id: ene_thread, bg_thread.thread_id: bg_thread}
+        respond = [make_inbound(msg_id="m1")]
+        result = build_threaded_context(
+            threads=threads,
+            pending=[],
+            respond_msgs=respond,
+            context_msgs=[],
+            channel_key="discord:chan1",
+        )
+
+        indices = result.metadata.get("_thread_shown_indices", {})
+        assert ene_thread.thread_id in indices
+        assert bg_thread.thread_id not in indices
+
+    def test_fast_path_no_thread_shown_indices(self):
+        """Fast path (single message, no threads) has no _thread_shown_indices."""
+        msg = make_inbound(msg_id="m1", content="hey ene")
+        result = build_threaded_context(
+            threads={},
+            pending=[],
+            respond_msgs=[msg],
+            context_msgs=[],
+            channel_key="discord:chan1",
+        )
+
+        # Fast path returns original message — no _thread_shown_indices added
+        indices = result.metadata.get("_thread_shown_indices", {})
+        assert indices == {} or "_thread_shown_indices" not in result.metadata

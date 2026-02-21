@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ene — Thread Inspector</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/threads.css">
+</head>
+<body class="threads-body">
+    <!-- Header -->
+    <header id="status-bar">
+        <div class="status-left">
+            <span class="logo">Ene Threads</span>
+            <a href="/" class="nav-link">Metrics</a>
+            <a href="/status" class="nav-link">Status</a>
+            <a href="/control" class="nav-link">Control</a>
+            <a href="/live" class="nav-link">Live Trace</a>
+            <a href="/settings" class="nav-link">Settings</a>
+            <span id="connection-badge" class="badge connecting">connecting</span>
+        </div>
+        <div class="status-right">
+            <span id="event-count">0 events</span>
+            <button id="btn-clear" class="ctrl-btn" title="Clear all">Clear</button>
+        </div>
+    </header>
+
+    <!-- Main split layout -->
+    <div class="split-layout">
+        <!-- Left: Discord-style message log -->
+        <div id="msg-log" class="msg-log">
+            <div id="msg-container" class="msg-container">
+                <div class="empty-state"><p>Waiting for messages...</p><p class="muted">Messages appear here as they arrive via SSE</p></div>
+            </div>
+        </div>
+
+        <!-- Right: Node graph visualization -->
+        <div class="graph-panel" id="graph-panel">
+            <div class="graph-toolbar">
+                <span class="graph-toolbar-title">Thread Graph</span>
+                <div class="graph-legend">
+                    <span class="gl-item"><span class="gl-dot gl-pending"></span>Pending</span>
+                    <span class="gl-item"><span class="gl-dot gl-thread"></span>Thread</span>
+                    <span class="gl-item"><span class="gl-dot gl-stale"></span>Stale</span>
+                    <span class="gl-item"><span class="gl-dot gl-dead"></span>Dead</span>
+                </div>
+                <div class="graph-stats">
+                    <span id="graph-threads">0 threads</span>
+                    <span id="graph-pending">0 pending</span>
+                    <span id="graph-msgs">0 msgs</span>
+                </div>
+            </div>
+            <div class="graph-viewport" id="graph-viewport">
+                <svg id="graph-svg" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <marker id="arrow-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                            <path d="M0,0 L8,3 L0,6 Z" fill="#3fb950"/>
+                        </marker>
+                        <marker id="arrow-cyan" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                            <path d="M0,0 L8,3 L0,6 Z" fill="#56d4dd"/>
+                        </marker>
+                        <marker id="arrow-yellow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                            <path d="M0,0 L8,3 L0,6 Z" fill="#d29922"/>
+                        </marker>
+                        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                            <path d="M0,0 L8,3 L0,6 Z" fill="#58a6ff"/>
+                        </marker>
+                    </defs>
+                    <!-- Edges layer (below nodes) -->
+                    <g id="edges-layer"></g>
+                    <!-- Nodes layer -->
+                    <g id="nodes-layer"></g>
+                </svg>
+            </div>
+            <!-- Detail panel (shows on node click) -->
+            <div class="detail-panel" id="detail-panel">
+                <div class="detail-header">
+                    <span id="detail-title">Click a node for details</span>
+                    <button id="detail-close" class="detail-close-btn">&times;</button>
+                </div>
+                <div id="detail-body" class="detail-body">
+                    <span class="muted">Select a message or thread node to see scoring details</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/threads.js"></script>
+</body>
+</html>

@@ -94,10 +94,20 @@ class DashboardServer:
             async def status_page(request: web.Request) -> web.FileResponse:
                 return web.FileResponse(STATIC_DIR / "status.html")
 
+            # Serve threads.html at /threads
+            async def threads_page(request: web.Request) -> web.FileResponse:
+                return web.FileResponse(STATIC_DIR / "threads.html")
+
+            # Serve settings.html at /settings
+            async def settings_page(request: web.Request) -> web.FileResponse:
+                return web.FileResponse(STATIC_DIR / "settings.html")
+
             app.router.add_get("/", index)
             app.router.add_get("/live", live_page)
             app.router.add_get("/control", control_page)
             app.router.add_get("/status", status_page)
+            app.router.add_get("/threads", threads_page)
+            app.router.add_get("/settings", settings_page)
             app.router.add_static("/static/", STATIC_DIR, name="static")
         else:
             logger.warning(f"Dashboard static dir not found: {STATIC_DIR}")

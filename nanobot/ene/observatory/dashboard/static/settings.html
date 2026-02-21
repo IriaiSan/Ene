@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ene — Settings</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/settings.css">
+</head>
+<body class="settings-body">
+    <!-- Header -->
+    <header id="status-bar">
+        <div class="status-left">
+            <span class="logo">Ene Settings</span>
+            <a href="/" class="nav-link">Metrics</a>
+            <a href="/status" class="nav-link">Status</a>
+            <a href="/control" class="nav-link">Control</a>
+            <a href="/live" class="nav-link">Live Trace</a>
+            <a href="/threads" class="nav-link">Threads</a>
+            <span id="status-badge" class="badge">loading</span>
+        </div>
+        <div class="status-right">
+            <button id="btn-refresh" class="ctrl-btn" title="Refresh settings">↻ Refresh</button>
+        </div>
+    </header>
+
+    <!-- Main content -->
+    <main class="settings-layout">
+
+        <!-- Section: Model Slots -->
+        <section class="settings-section">
+            <div class="section-header">
+                <h2>Model Configuration</h2>
+                <p class="section-desc">Control which LLM is used for each component. Changes take effect immediately.</p>
+            </div>
+
+            <div class="model-slots">
+                <!-- Primary model -->
+                <div class="model-slot" data-slot="primary">
+                    <div class="slot-header">
+                        <div class="slot-info">
+                            <h3>Primary Model <span class="slot-badge slot-badge-primary">ENE</span></h3>
+                            <p class="slot-desc">Main LLM for Ene's responses, tool calls, and reasoning.</p>
+                        </div>
+                        <span class="slot-current" id="current-primary">—</span>
+                    </div>
+                    <div class="slot-controls">
+                        <select id="select-primary" class="model-select">
+                            <option value="">Loading...</option>
+                        </select>
+                        <button class="ctrl-btn ctrl-btn-primary btn-apply" data-slot="primary">Apply</button>
+                    </div>
+                </div>
+
+                <!-- Consolidation model -->
+                <div class="model-slot" data-slot="consolidation">
+                    <div class="slot-header">
+                        <div class="slot-info">
+                            <h3>Consolidation Model <span class="slot-badge slot-badge-consolidation">MEMORY</span></h3>
+                            <p class="slot-desc">Used for diary consolidation, running summaries, and utility tasks. Falls back to primary if not set.</p>
+                        </div>
+                        <span class="slot-current" id="current-consolidation">—</span>
+                    </div>
+                    <div class="slot-controls">
+                        <select id="select-consolidation" class="model-select">
+                            <option value="">Loading...</option>
+                        </select>
+                        <button class="ctrl-btn ctrl-btn-primary btn-apply" data-slot="consolidation">Apply</button>
+                    </div>
+                </div>
+
+                <!-- Daemon model -->
+                <div class="model-slot" data-slot="daemon">
+                    <div class="slot-header">
+                        <div class="slot-info">
+                            <h3>Daemon Model <span class="slot-badge slot-badge-daemon">SUBCONSCIOUS</span></h3>
+                            <p class="slot-desc">Pre-classifier for message triage. Uses free model rotation by default. Set a specific model to override.</p>
+                        </div>
+                        <span class="slot-current" id="current-daemon">—</span>
+                    </div>
+                    <div class="slot-controls">
+                        <select id="select-daemon" class="model-select">
+                            <option value="">Loading...</option>
+                        </select>
+                        <button class="ctrl-btn ctrl-btn-primary btn-apply" data-slot="daemon">Apply</button>
+                        <button class="ctrl-btn ctrl-btn-danger btn-clear-daemon" title="Revert to free model rotation">Clear → Free Rotation</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section: Model Pricing Table -->
+        <section class="settings-section">
+            <div class="section-header">
+                <h2>Model Pricing</h2>
+                <p class="section-desc">Known pricing per million tokens. Custom models appear here after being added.</p>
+            </div>
+            <div class="pricing-table-wrap">
+                <table class="pricing-table" id="pricing-table">
+                    <thead>
+                        <tr>
+                            <th>Model</th>
+                            <th>Input $/M</th>
+                            <th>Output $/M</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="pricing-tbody">
+                        <tr><td colspan="4" class="muted">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Section: Add Custom Model -->
+        <section class="settings-section">
+            <div class="section-header">
+                <h2>Add Custom Model</h2>
+                <p class="section-desc">Register a new model with pricing. Use OpenRouter format: <code>provider/model-name</code></p>
+            </div>
+
+            <div class="custom-model-form" id="custom-model-form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="custom-model-id">Model ID</label>
+                        <input type="text" id="custom-model-id" class="ctrl-input" placeholder="e.g. mistral/mistral-large" autocomplete="off">
+                    </div>
+                    <div class="form-group form-group-sm">
+                        <label for="custom-input-price">Input $/M</label>
+                        <input type="number" id="custom-input-price" class="ctrl-input" placeholder="1.00" step="0.01" min="0" value="1.00">
+                    </div>
+                    <div class="form-group form-group-sm">
+                        <label for="custom-output-price">Output $/M</label>
+                        <input type="number" id="custom-output-price" class="ctrl-input" placeholder="2.00" step="0.01" min="0" value="2.00">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="custom-label">Label <span class="optional">(optional)</span></label>
+                        <input type="text" id="custom-label" class="ctrl-input" placeholder="Display name" autocomplete="off">
+                    </div>
+                    <div class="form-actions">
+                        <button id="btn-add-model" class="ctrl-btn ctrl-btn-primary">Add Model</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section: Custom Models List -->
+        <section class="settings-section" id="custom-models-section">
+            <div class="section-header">
+                <h2>Custom Models</h2>
+                <p class="section-desc">Models you've added. These appear in all model selectors and the pricing table.</p>
+            </div>
+            <div id="custom-models-list" class="custom-models-list">
+                <span class="muted">No custom models yet</span>
+            </div>
+        </section>
+
+        <!-- Section: Runtime Info -->
+        <section class="settings-section">
+            <div class="section-header">
+                <h2>Runtime Info</h2>
+                <p class="section-desc">Current agent configuration (read-only).</p>
+            </div>
+            <div class="info-grid" id="runtime-info">
+                <span class="muted">Loading...</span>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Toast notification -->
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="/static/settings.js"></script>
+</body>
+</html>

@@ -159,12 +159,15 @@ class Thread:
             self.ene_involved = True
         if msg.is_ene:
             self.ene_involved = True
-        # Trim if over capacity
+        # Trim if over capacity — adjust last_shown_index so it stays
+        # consistent with the trimmed message list. Without this, the index
+        # can point past the start, causing incorrect "new messages" counts.
         if len(self.messages) > THREAD_MAX_MESSAGES:
             removed = self.messages[: len(self.messages) - THREAD_MAX_MESSAGES]
             self.messages = self.messages[-THREAD_MAX_MESSAGES:]
             for rm in removed:
                 self.discord_msg_ids.discard(rm.discord_msg_id)
+            self.last_shown_index = max(0, self.last_shown_index - len(removed))
 
     def is_expired(self, now: float | None = None) -> bool:
         """Check if this thread should transition to a later state."""

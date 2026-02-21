@@ -382,9 +382,12 @@ def build_threaded_context(
 
     merged_content = "\n".join(parts).strip()
 
-    # ── Mark threads as shown so follow-up turns only show NEW messages ──
-    for t in displayed_ene_threads:
-        t.last_shown_index = len(t.messages)
+    # ── Deferred indices: caller must commit AFTER confirmed LLM success ──
+    # Previously mutated here — caused corruption when LLM call failed
+    # because threads were marked "shown" before the LLM actually saw them.
+    _thread_shown_indices = {
+        t.thread_id: len(t.messages) for t in displayed_ene_threads
+    }
 
     # ── Build the InboundMessage ─────────────────────────────────
     trigger_msg = _select_trigger(respond_msgs, context_msgs)
@@ -415,6 +418,7 @@ def build_threaded_context(
             "msg_id_map": msg_id_map,
             "thread_count": len(ene_threads),
             "bg_thread_count": len(bg_threads),
+            "_thread_shown_indices": _thread_shown_indices,
         },
     )
 

@@ -165,6 +165,20 @@ class LiteLLMProvider(LLMProvider):
         """Track consecutive failures per model."""
         self._model_failures[model] = self._model_failures.get(model, 0) + 1
 
+    def set_primary_model(self, model: str) -> str:
+        """Hot-swap the primary model. Returns previous model name.
+
+        Resets fallback rotation to index 0 (the new primary) and clears
+        all failure counters so the new model starts fresh.
+        """
+        old = self.default_model
+        self.default_model = model
+        if self._fallback_models:
+            self._fallback_models[0] = model
+            self._model_index = 0  # Reset rotation to new primary
+        self._model_failures.clear()
+        return old
+
     # ── Model recovery ───────────────────────────────────────────
 
     def _should_try_recovery(self) -> bool:
