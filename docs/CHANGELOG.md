@@ -4,6 +4,20 @@ All notable changes to Ene's systems, behavior, and capabilities.
 
 ---
 
+## [2026-02-21a] — Catch-All XML Defense + Remote Dashboard + Dev/Prod Separation
+
+### Fixed
+- **Nuclear catch-all XML stripping** (`response_cleaning.py`): Instead of whack-a-mole with each new DeepSeek XML pattern, added a final catch-all that strips ANY `<...>` tag from output except Discord-safe patterns (mentions, channels, emojis, timestamps, URLs, slash commands). This handles `<｜DSML｜...>`, `<message>`, `<thinking>`, and any future invention.
+- **Expanded session marker blocking** (`response_cleaning.py`): Blocklist now case-insensitive, covers `[no response generated]`, `[message sent]`, `[response sent]` variants.
+
+### Added
+- **Daemon context injection** (`loop.py`, `tracker.py`, `processor.py`): Daemon pre-classifier now receives last 8 messages from the channel as context. New `get_recent_context()` method on conversation tracker aggregates messages across active/stale threads + pending. Enables disambiguation of ambiguous messages.
+- **Dashboard remote access** (`observatory/__init__.py`, `server.py`): Dashboard now binds to `0.0.0.0` instead of `127.0.0.1`. Accessible from other devices via Tailscale.
+- **Dev/prod branch separation**: Created `dev` branch. `main` = production (what Ene runs on), `dev` = development. Merge to main + restart to deploy.
+- **Stable snapshot**: Lab snapshot `stable_v1` created (1108 files, 36.6 MB).
+
+---
+
 ## [2026-02-20c] — Session Marker + Message Tag Leak Fix
 
 ### Fixed

@@ -318,4 +318,19 @@ Comprehensive literature review across 60+ papers covering conversation disentan
 
 ---
 
-*Last updated: 2026-02-18*
+## Future Ideas — Parking Lot
+
+### Deliberate XML Noise as Security-Through-Obscurity
+**Status:** Idea (not implemented)
+**Origin:** Observation that DeepSeek leaks random XML tags (`<｜DSML｜...>`, `<message>`, etc.) into responses. Instead of treating this purely as a bug, explore deliberately injecting random XML-like noise into Ene's responses. Benefits:
+- Makes it harder for observers to reverse-engineer the tool calling protocol
+- Creates plausible deniability about what's a real tool call vs. noise
+- Adds personality quirk ("she does that sometimes")
+- Could be tied to mood/personality state
+
+**Risks:** Users might think she's broken. Needs careful tuning — random but bounded.
+**Prerequisite:** Catch-all XML stripping must be solid first (implemented 2026-02-21).
+
+---
+
+*Last updated: 2026-02-21*
