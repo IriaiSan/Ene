@@ -800,6 +800,11 @@ class AgentLoop:
                 try:
                     _sender_label = m.metadata.get("author_name", m.sender_id)
 
+                    # Get recent channel context for daemon (last 8 messages)
+                    _recent_context: list[str] = []
+                    if conv_mod and hasattr(conv_mod, "tracker") and conv_mod.tracker:
+                        _recent_context = conv_mod.tracker.get_recent_context(channel_key, limit=8)
+
                     # Ene: prompt log — record exactly what the daemon sees
                     _daemon_user_msg = f"Sender: {_sender_label} (ID: {caller_id})"
                     if is_dad:
@@ -808,7 +813,9 @@ class AgentLoop:
                         _daemon_user_msg += " [REPLYING TO ENE]"
                     if m.metadata.get("_is_stale"):
                         _daemon_user_msg += f" [MESSAGE IS STALE - sent {m.metadata.get('_stale_minutes', '?')} min ago]"
-                    _daemon_user_msg += f"\nMessage: {m.content}"
+                    if _recent_context:
+                        _daemon_user_msg += "\n\nRecent chat:\n" + "\n".join(_recent_context)
+                    _daemon_user_msg += f"\n\nNew message to classify:\n{m.content}"
                     try:
                         from nanobot.ene.daemon.processor import DAEMON_PROMPT as _DAEMON_SYSTEM
                     except ImportError:
@@ -819,6 +826,7 @@ class AgentLoop:
                         system=_DAEMON_SYSTEM,
                         user=_daemon_user_msg,
                     )
+                    logger.debug(f"Daemon prompt for {_sender_label}: {_daemon_user_msg[:300]}")
 
                     daemon_result = await daemon_mod.process_message(
                         content=m.content,
@@ -827,6 +835,7 @@ class AgentLoop:
                         is_dad=is_dad,
                         metadata=m.metadata,
                         channel_state=_channel_state,
+                        recent_context=_recent_context,
                     )
                     # Store daemon result on message metadata for context injection
                     m.metadata["_daemon_result"] = daemon_result

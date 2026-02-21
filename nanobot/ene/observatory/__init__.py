@@ -143,7 +143,7 @@ class ObservatoryModule(EneModule):
                 from nanobot.ene.observatory.dashboard.server import DashboardServer
                 self._dashboard = DashboardServer(
                     self._store, self._health, self._reporter,
-                    host="127.0.0.1", port=dashboard_port,
+                    host="0.0.0.0", port=dashboard_port,
                 )
                 await self._dashboard.start()
             except Exception as e:

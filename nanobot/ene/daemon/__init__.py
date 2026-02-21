@@ -147,6 +147,7 @@ class DaemonModule(EneModule):
         is_dad: bool,
         metadata: dict | None = None,
         channel_state=None,
+        recent_context: list[str] | None = None,
     ) -> DaemonResult:
         """Run daemon analysis on a message.
 
@@ -205,6 +206,7 @@ class DaemonModule(EneModule):
             is_dad=is_dad,
             metadata=metadata,
             channel_state=channel_state,
+            recent_context=recent_context,
         )
 
         # Store for context injection

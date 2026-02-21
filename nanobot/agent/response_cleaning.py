@@ -77,14 +77,17 @@ def clean_response(content: str, msg: Any, is_public: bool = False) -> str | Non
     if not content:
         return None
 
-    # --- Strip session markers parroted by LLM ---
-    # The LLM sees "[responded via message tool]" in session history and
-    # sometimes parrots it back as its actual response.
-    if content.strip() in (
+    # --- Block session markers parroted by LLM ---
+    # The LLM sees internal markers in session history and parrots them back.
+    _stripped = content.strip().lower()
+    if _stripped in (
         "[responded via message tool]",
         "[no response]",
+        "[no response generated]",
+        "[message sent]",
+        "[response sent]",
     ):
-        logger.warning("Blocked LLM parroting session marker as response")
+        logger.warning(f"Blocked session marker as response: {content.strip()}")
         return None
 
     raw_length = len(content)
@@ -162,6 +165,28 @@ def clean_response(content: str, msg: Any, is_public: bool = False) -> str | Non
         content = re.sub(r'</?message>', '', content)
     # Leaked #msgN reply_to tags on their own line
     content = re.sub(r'^\s*#msg\d+\s*$', '', content, flags=re.MULTILINE)
+
+    # --- Nuclear catch-all: strip ANY remaining XML-like tags ---
+    # DeepSeek invents new tag patterns constantly (<｜DSML｜...>, <message>,
+    # <thinking>, etc.). Instead of whack-a-mole, strip everything that looks
+    # like an XML tag EXCEPT Discord-safe patterns:
+    #   <@mention>  <#channel>  <:emoji:id>  <a:emoji:id>  <t:timestamp>
+    #   <https://...>  <http://...>
+    # This is the last line of defense — runs after all specific handlers.
+    def _strip_non_discord_tags(m: re.Match) -> str:
+        tag = m.group(0)
+        # Keep Discord formatting: mentions, channels, emojis, timestamps,
+        # slash commands, and URLs.  Examples:
+        #   <@123>  <@!123>  <#456>  <:name:789>  <a:name:789>
+        #   <t:1234:R>  </cmd:123>  <https://...>  <http://...>
+        if re.match(
+            r'<@[!&]?\d|<#\d|<a?:\w+:\d|<t:\d|</\w+:\d|<https?://',
+            tag,
+        ):
+            return tag
+        logger.debug(f"Catch-all stripped tag: {tag[:80]}")
+        return ''
+    content = re.sub(r'<[^>]+>', _strip_non_discord_tags, content)
 
     # --- Strip LLM error messages that leaked through ---
     content = re.sub(r'Error calling LLM:.*', '', content, flags=re.DOTALL)

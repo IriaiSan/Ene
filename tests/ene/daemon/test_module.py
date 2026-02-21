@@ -201,6 +201,7 @@ class TestProcessMessage:
             is_dad=False,
             metadata=metadata,
             channel_state=None,
+            recent_context=None,
         )
 
 

@@ -768,6 +768,35 @@ class ConversationTracker:
 
     # ── Stats ────────────────────────────────────────────────────────
 
+    def get_recent_context(self, channel_key: str, limit: int = 8) -> list[str]:
+        """Return the last N messages across all active threads in a channel.
+
+        Used by the daemon to see surrounding conversation context when
+        classifying a single message. Returns simple "Author: content" lines
+        sorted by timestamp (oldest first).
+        """
+        all_msgs: list[tuple[float, str]] = []
+
+        for thread in self._threads.values():
+            if thread.channel_key != channel_key:
+                continue
+            if thread.state not in (ACTIVE, STALE):
+                continue
+            for tm in thread.messages:
+                label = "Ene" if tm.is_ene else tm.author_name
+                all_msgs.append((tm.timestamp, f"{label}: {tm.content}"))
+
+        # Also include unthreaded pending messages
+        for pm in self._pending:
+            if pm.channel_key != channel_key:
+                continue
+            name = pm.message.author_name or pm.message.author_id
+            all_msgs.append((pm.message.timestamp, f"{name}: {pm.message.content}"))
+
+        # Sort by time, take last N
+        all_msgs.sort(key=lambda x: x[0])
+        return [line for _, line in all_msgs[-limit:]]
+
     def get_stats(self) -> dict:
         """Get tracker statistics."""
         by_state: dict[str, int] = {}

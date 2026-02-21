@@ -39,7 +39,7 @@ class DashboardServer:
         store: "MetricsStore",
         health: "HealthMonitor | None" = None,
         reporter: "ReportGenerator | None" = None,
-        host: str = "127.0.0.1",
+        host: str = "0.0.0.0",
         port: int = 18791,
     ):
         self._store = store
@@ -154,7 +154,7 @@ async def run_dashboard(
     store: "MetricsStore",
     health: "HealthMonitor | None" = None,
     reporter: "ReportGenerator | None" = None,
-    host: str = "127.0.0.1",
+    host: str = "0.0.0.0",
     port: int = 18791,
 ) -> DashboardServer:
     """Create and start a dashboard server. Returns the server instance."""

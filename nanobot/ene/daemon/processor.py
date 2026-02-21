@@ -89,6 +89,7 @@ class DaemonProcessor:
         is_dad: bool,
         metadata: dict | None = None,
         channel_state=None,
+        recent_context: list[str] | None = None,
     ) -> DaemonResult:
         """Process a message through the daemon.
 
@@ -100,7 +101,7 @@ class DaemonProcessor:
 
         try:
             result = await asyncio.wait_for(
-                self._llm_process(content, sender_name, sender_id, is_dad, metadata),
+                self._llm_process(content, sender_name, sender_id, is_dad, metadata, recent_context),
                 timeout=self._timeout,
             )
             result.latency_ms = int((_time.perf_counter() - start) * 1000)
@@ -185,11 +186,12 @@ class DaemonProcessor:
         sender_id: str,
         is_dad: bool,
         metadata: dict | None,
+        recent_context: list[str] | None = None,
     ) -> DaemonResult:
         """Make the actual LLM call for daemon analysis."""
         model = self._get_current_model()
 
-        # Build compact user message
+        # Build compact user message with conversation context
         user_msg = f"Sender: {sender_name} (ID: {sender_id})"
         if is_dad:
             user_msg += " [THIS IS DAD - respond unless clearly talking to someone else]"
@@ -198,7 +200,9 @@ class DaemonProcessor:
         if metadata and metadata.get("_is_stale"):
             stale_min = metadata.get("_stale_minutes", "?")
             user_msg += f" [MESSAGE IS STALE - sent {stale_min} min ago]"
-        user_msg += f"\nMessage: {content[:2000]}"  # Truncate for free model limits
+        if recent_context:
+            user_msg += "\n\nRecent chat:\n" + "\n".join(recent_context)
+        user_msg += f"\n\nNew message to classify:\n{content[:2000]}"
 
         messages = [
             {"role": "system", "content": DAEMON_PROMPT},
