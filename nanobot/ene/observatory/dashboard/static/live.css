@@ -511,8 +511,259 @@
     overflow-y: auto;
 }
 
-/* Responsive for prompt log */
+/* ── Context Inspector Panel ─────────────────────────────────────── */
+
+#context-section {
+    flex: 35 0 0;
+    min-height: 100px;
+    display: flex;
+    flex-direction: column;
+    border-top: 2px solid var(--border);
+    background: var(--bg);
+}
+
+#context-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.context-title {
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--cyan, #56d4dd);
+}
+
+.context-subtitle {
+    font-size: 11px;
+    color: var(--muted);
+    flex: 1;
+}
+
+.context-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ctx-toggle {
+    font-size: 11px;
+    color: var(--muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.ctx-toggle input { margin: 0; }
+
+#context-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+}
+
+.ctx-panels {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    height: 100%;
+}
+
+.ctx-panel {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.ctx-panel h4 {
+    margin: 0;
+    padding: 8px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.ctx-panel h5 {
+    margin: 8px 0 4px;
+    padding: 0 10px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+}
+
+.ctx-badge {
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--muted);
+    background: rgba(255,255,255,0.06);
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin-left: auto;
+}
+
+/* Memory section entries */
+.ctx-mem-section {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+}
+
+.ctx-mem-section:last-child { border-bottom: none; }
+
+.ctx-mem-section-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.ctx-mem-section-header .ctx-token-bar {
+    flex: 1;
+    height: 4px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.ctx-token-fill {
+    height: 100%;
+    background: var(--cyan, #56d4dd);
+    border-radius: 2px;
+    transition: width 0.3s;
+}
+
+.ctx-token-fill.warn { background: var(--yellow, #e8c547); }
+.ctx-token-fill.danger { background: var(--red, #e84747); }
+
+.ctx-mem-entries {
+    padding: 4px 0 0 12px;
+}
+
+.ctx-mem-entry {
+    font-size: 10px;
+    color: var(--text);
+    padding: 2px 0;
+    line-height: 1.4;
+    border-left: 2px solid rgba(255,255,255,0.08);
+    padding-left: 8px;
+    margin-bottom: 2px;
+}
+
+.ctx-mem-entry .importance {
+    color: var(--yellow, #e8c547);
+    font-weight: 600;
+    font-size: 9px;
+}
+
+/* Thread entries */
+.ctx-thread-entry {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+}
+
+.ctx-thread-entry:last-child { border-bottom: none; }
+
+.ctx-thread-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+}
+
+.ctx-thread-state {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 1px 5px;
+    border-radius: 3px;
+}
+
+.ctx-thread-state.ACTIVE { background: rgba(86, 212, 100, 0.2); color: var(--green); }
+.ctx-thread-state.STALE { background: rgba(232, 197, 71, 0.2); color: var(--yellow); }
+.ctx-thread-state.DEAD { background: rgba(232, 71, 71, 0.2); color: var(--red); }
+
+.ctx-thread-msgs {
+    padding-left: 12px;
+}
+
+.ctx-thread-msg {
+    font-size: 10px;
+    color: var(--muted);
+    padding: 1px 0;
+    line-height: 1.3;
+}
+
+.ctx-thread-msg .author {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.ctx-thread-msg .author.ene {
+    color: var(--cyan, #56d4dd);
+}
+
+/* Session entries */
+.ctx-session-msg {
+    padding: 3px 10px;
+    font-size: 10px;
+    line-height: 1.4;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+
+.ctx-session-msg.user { border-left: 2px solid var(--green); }
+.ctx-session-msg.assistant { border-left: 2px solid var(--cyan, #56d4dd); }
+
+.ctx-session-role {
+    font-weight: 700;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.ctx-session-msg.user .ctx-session-role { color: var(--green); }
+.ctx-session-msg.assistant .ctx-session-role { color: var(--cyan, #56d4dd); }
+
+.ctx-session-content {
+    color: var(--text);
+    margin-top: 1px;
+}
+
+#ctx-mem-sections,
+#ctx-thread-list,
+#ctx-pending-list,
+#ctx-session-messages {
+    overflow-y: auto;
+    flex: 1;
+}
+
+.ctx-empty {
+    color: var(--muted);
+    font-size: 11px;
+    padding: 10px;
+    text-align: center;
+}
+
+/* Responsive for prompt log + context */
 @media (max-width: 768px) {
     .live-layout { flex: 0 0 40vh; }
     #prompt-log-section { flex: 0 0 50vh; }
+    #context-section { flex: 0 0 40vh; }
+    .ctx-panels { grid-template-columns: 1fr; }
 }

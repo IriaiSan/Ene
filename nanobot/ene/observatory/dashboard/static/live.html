@@ -112,6 +112,44 @@
         </div>
     </div>
 
+    <!-- Context Panel — real-time view of memory, threads, session -->
+    <div id="context-section">
+        <div id="context-header">
+            <span class="context-title">Context Inspector</span>
+            <span class="context-subtitle">What Ene currently knows — memory, threads, session history</span>
+            <div class="context-controls">
+                <span id="context-status" class="badge">loading</span>
+                <label class="ctx-toggle" title="Auto-refresh every 5s">
+                    <input type="checkbox" id="ctx-auto-refresh" checked> Auto
+                </label>
+                <button id="btn-ctx-refresh" class="ctrl-btn" title="Refresh now">↻ Refresh</button>
+            </div>
+        </div>
+        <div id="context-body">
+            <div class="ctx-panels">
+                <!-- Memory Panel -->
+                <div class="ctx-panel" id="ctx-memory">
+                    <h4>🧠 Core Memory <span id="ctx-mem-budget" class="ctx-badge"></span></h4>
+                    <div id="ctx-mem-sections"></div>
+                </div>
+                <!-- Threads Panel -->
+                <div class="ctx-panel" id="ctx-threads">
+                    <h4>💬 Active Threads <span id="ctx-thread-count" class="ctx-badge"></span></h4>
+                    <div id="ctx-thread-list"></div>
+                    <div id="ctx-pending-wrap">
+                        <h5>Pending (unassigned)</h5>
+                        <div id="ctx-pending-list"></div>
+                    </div>
+                </div>
+                <!-- Session Panel -->
+                <div class="ctx-panel" id="ctx-sessions">
+                    <h4>📋 Session History <span id="ctx-session-info" class="ctx-badge"></span></h4>
+                    <div id="ctx-session-messages"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/live.js"></script>
 </body>
 </html>

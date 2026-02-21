@@ -654,6 +654,133 @@ function pct(n, total) {
     return total > 0 ? Math.round(n / total * 100) : 0;
 }
 
+// ── Context Inspector ─────────────────────────────
+
+let ctxAutoRefresh = true;
+
+function renderContextMemory(mem) {
+    const el = document.getElementById('ctx-mem-sections');
+    const badge = document.getElementById('ctx-mem-budget');
+    if (!mem) { el.innerHTML = '<div class="ctx-empty">Memory not available</div>'; return; }
+
+    badge.textContent = `${mem.total_tokens} / ${mem.budget} tokens`;
+    const pctUsed = mem.budget > 0 ? Math.round(mem.total_tokens / mem.budget * 100) : 0;
+
+    let html = '';
+    for (const [name, sec] of Object.entries(mem.sections || {})) {
+        const secPct = sec.max_tokens > 0 ? Math.round(sec.used_tokens / sec.max_tokens * 100) : 0;
+        const fillClass = secPct > 80 ? 'danger' : secPct > 50 ? 'warn' : '';
+        html += `<div class="ctx-mem-section">`;
+        html += `<div class="ctx-mem-section-header">`;
+        html += `<span>${esc(sec.label || name)}</span>`;
+        html += `<span style="font-size:9px;color:var(--muted)">${sec.count} entries · ${sec.used_tokens}t</span>`;
+        html += `<div class="ctx-token-bar"><div class="ctx-token-fill ${fillClass}" style="width:${secPct}%"></div></div>`;
+        html += `</div>`;
+        if (sec.entries && sec.entries.length > 0) {
+            html += `<div class="ctx-mem-entries">`;
+            for (const e of sec.entries) {
+                html += `<div class="ctx-mem-entry">`;
+                html += `<span class="importance">★${e.importance}</span> `;
+                html += esc(e.content);
+                html += `</div>`;
+            }
+            html += `</div>`;
+        }
+        html += `</div>`;
+    }
+    el.innerHTML = html || '<div class="ctx-empty">No memory entries</div>';
+}
+
+function renderContextThreads(threads) {
+    const listEl = document.getElementById('ctx-thread-list');
+    const countEl = document.getElementById('ctx-thread-count');
+    const pendingEl = document.getElementById('ctx-pending-list');
+
+    if (!threads) { listEl.innerHTML = '<div class="ctx-empty">Tracker not available</div>'; return; }
+
+    const active = threads.active || [];
+    const pending = threads.pending || [];
+    countEl.textContent = `${active.length} active · ${pending.length} pending`;
+
+    let html = '';
+    for (const t of active) {
+        html += `<div class="ctx-thread-entry">`;
+        html += `<div class="ctx-thread-meta">`;
+        html += `<span class="ctx-thread-state ${esc(t.state)}">${esc(t.state)}</span>`;
+        html += `<span style="font-size:10px;color:var(--muted)">${t.msg_count} msgs · ${(t.participants || []).join(', ')}</span>`;
+        if (t.ene_involved) html += `<span style="font-size:9px;color:var(--cyan,#56d4dd)">Ene involved</span>`;
+        html += `</div>`;
+        if (t.recent_messages && t.recent_messages.length > 0) {
+            html += `<div class="ctx-thread-msgs">`;
+            for (const m of t.recent_messages) {
+                const isEne = m.author === 'Ene';
+                html += `<div class="ctx-thread-msg">`;
+                html += `<span class="author ${isEne ? 'ene' : ''}">${esc(m.author)}:</span> `;
+                html += esc(m.content);
+                html += `</div>`;
+            }
+            html += `</div>`;
+        }
+        html += `</div>`;
+    }
+    listEl.innerHTML = html || '<div class="ctx-empty">No active threads</div>';
+
+    let pendingHtml = '';
+    for (const p of pending) {
+        pendingHtml += `<div class="ctx-thread-msg"><span class="author">${esc(p.author)}:</span> ${esc(p.content)}</div>`;
+    }
+    pendingEl.innerHTML = pendingHtml || '<div class="ctx-empty">None</div>';
+}
+
+function renderContextSessions(sessions) {
+    const el = document.getElementById('ctx-session-messages');
+    const info = document.getElementById('ctx-session-info');
+
+    if (!sessions || sessions.length === 0) {
+        el.innerHTML = '<div class="ctx-empty">No active sessions</div>';
+        return;
+    }
+
+    // Show the most active session (usually the main Discord channel)
+    const s = sessions[0];
+    info.textContent = `${s.msg_count || 0} msgs · ~${s.token_estimate || 0} tokens · ${s.responded_count || 0} responses`;
+
+    let html = '';
+    for (const m of (s.recent || [])) {
+        const cls = m.role === 'assistant' ? 'assistant' : 'user';
+        html += `<div class="ctx-session-msg ${cls}">`;
+        html += `<span class="ctx-session-role">${esc(m.role)}</span>`;
+        html += `<div class="ctx-session-content">${esc(m.content)}</div>`;
+        html += `</div>`;
+    }
+    el.innerHTML = html || '<div class="ctx-empty">No messages</div>';
+}
+
+async function pollContext() {
+    if (!ctxAutoRefresh) return;
+    const statusEl = document.getElementById('context-status');
+    try {
+        const res = await fetch('/api/live/context');
+        const data = await res.json();
+        statusEl.textContent = 'live';
+        statusEl.className = 'badge badge-ok';
+        renderContextMemory(data.memory);
+        renderContextThreads(data.threads);
+        renderContextSessions(data.sessions);
+    } catch (e) {
+        statusEl.textContent = 'error';
+        statusEl.className = 'badge badge-error';
+    }
+}
+
+// Context panel controls
+document.getElementById('ctx-auto-refresh').addEventListener('change', (e) => {
+    ctxAutoRefresh = e.target.checked;
+});
+document.getElementById('btn-ctx-refresh').addEventListener('click', () => {
+    pollContext();
+});
+
 // ── Init ──────────────────────────────────────────
 
 connectSSE();
@@ -661,3 +788,5 @@ connectPromptSSE();
 setInterval(pollState, 3000);
 pollModuleHealth();
 setInterval(pollModuleHealth, 10000);
+pollContext();
+setInterval(pollContext, 5000);

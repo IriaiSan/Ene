@@ -943,6 +943,120 @@ def create_api_routes(
 
         return web.json_response(result)
 
+    # ── Context snapshot (combined memory + threads + session) ───────────
+
+    async def context_snapshot(request: web.Request) -> web.Response:
+        """Combined snapshot of what Ene currently 'knows' — memory, threads, session.
+
+        Used by the live dashboard context panel to show real-time state.
+        Polls every few seconds so the user can watch state evolve.
+        """
+        result: dict[str, Any] = {}
+
+        # Core memory
+        mem = _ctrl.memory_mod
+        if mem and hasattr(mem, '_system') and mem._system:
+            core = mem._system.core
+            raw = core._data.get("sections", {})
+            sections = {}
+            for name, sec in raw.items():
+                entries = sec.get("entries", [])
+                sections[name] = {
+                    "label": sec.get("label", name),
+                    "used_tokens": core.get_section_tokens(name),
+                    "max_tokens": sec.get("max_tokens", 0),
+                    "count": len(entries),
+                    "entries": [
+                        {
+                            "id": e.get("id", "")[:8],
+                            "content": e.get("content", "")[:200],
+                            "importance": e.get("importance", 5),
+                            "updated_at": e.get("updated_at", e.get("created_at", "")),
+                        }
+                        for e in entries
+                    ],
+                }
+            result["memory"] = {
+                "sections": sections,
+                "total_tokens": core.get_total_tokens(),
+                "budget": core.token_budget,
+            }
+
+        # Active threads
+        tracker_mod = _ctrl.conv_tracker
+        if tracker_mod and hasattr(tracker_mod, 'tracker') and tracker_mod.tracker:
+            tracker = tracker_mod.tracker
+            threads = []
+            for tid, thread in tracker._threads.items():
+                participants = set()
+                for m in thread.messages:
+                    if not m.is_ene:
+                        participants.add(m.author_name)
+                last_msgs = thread.messages[-5:] if thread.messages else []
+                threads.append({
+                    "id": tid[:8],
+                    "channel": thread.channel_key,
+                    "state": thread.state,
+                    "msg_count": len(thread.messages),
+                    "participants": list(participants)[:4],
+                    "ene_involved": thread.ene_involved,
+                    "last_activity": thread.messages[-1].timestamp if thread.messages else 0,
+                    "last_shown_index": getattr(thread, 'last_shown_index', 0),
+                    "recent_messages": [
+                        {
+                            "author": "Ene" if m.is_ene else m.author_name,
+                            "content": m.content[:150],
+                            "ts": m.timestamp,
+                        }
+                        for m in last_msgs
+                    ],
+                })
+            threads.sort(key=lambda x: x["last_activity"], reverse=True)
+
+            pending = []
+            for pm in tracker._pending:
+                pending.append({
+                    "author": pm.message.author_name or pm.message.author_id,
+                    "content": pm.message.content[:150],
+                    "channel": pm.channel_key,
+                })
+
+            result["threads"] = {"active": threads, "pending": pending}
+
+        # Session state (most recent entries)
+        sessions = _ctrl.sessions
+        if sessions:
+            try:
+                session_list = sessions.list_sessions()
+                active_sessions = []
+                for s in session_list:
+                    key = s.get("key", "")
+                    if not key:
+                        continue
+                    try:
+                        session = sessions.get_or_create(key)
+                        history = session.get_history(max_messages=6)
+                        active_sessions.append({
+                            "key": key,
+                            "msg_count": s.get("msg_count", len(history)),
+                            "token_estimate": session.estimate_tokens(),
+                            "responded_count": session.get_responded_count(),
+                            "recent": [
+                                {
+                                    "role": m.get("role", "?"),
+                                    "content": m.get("content", "")[:150],
+                                }
+                                for m in history[-6:]
+                            ],
+                        })
+                    except Exception:
+                        continue
+                result["sessions"] = active_sessions
+            except Exception:
+                result["sessions"] = []
+
+        return web.json_response(result)
+
     # ── Route definitions ─────────────────────────────────────────────────
 
     routes = [
@@ -967,6 +1081,7 @@ def create_api_routes(
         web.get("/api/live/prompts", prompt_stream),
         web.get("/api/live/modules", module_health),
         web.post("/api/live/reset", live_hard_reset),
+        web.get("/api/live/context", context_snapshot),
         # Brain toggle (new)
         web.get("/api/brain", brain_status),
         web.post("/api/brain/pause", brain_pause),
